@@ -57,6 +57,7 @@ class StrategyEngineSettings:
     high_window: int = 500
     max_pending_low_events: int = 16
     outbox_batch_size: int = 1000
+    initial_freshness_intervals: int = 2
     require_market_sequence: bool = True
     require_intent_subscriber: bool = True
 
@@ -69,6 +70,8 @@ class StrategyEngineSettings:
             raise ValueError("max_pending_low_events must be positive")
         if not 1 <= self.outbox_batch_size <= 10_000:
             raise ValueError("outbox_batch_size must be in [1, 10000]")
+        if self.initial_freshness_intervals < 0:
+            raise ValueError("initial_freshness_intervals must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +84,7 @@ class SymbolBootstrap:
     missed_events: int
     replayed_events: int
     reset_events: int
+    initial_evaluation: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +105,7 @@ class StrategyEngineHealth:
     barrier_waits: int = 0
     warmup_decisions: int = 0
     evaluations: int = 0
+    initial_evaluations: int = 0
     signals: int = 0
     intents_persisted: int = 0
     intents_published: int = 0
@@ -125,6 +130,7 @@ class StrategyEngineHealth:
             "barrier_waits": self.barrier_waits,
             "warmup_decisions": self.warmup_decisions,
             "evaluations": self.evaluations,
+            "initial_evaluations": self.initial_evaluations,
             "signals": self.signals,
             "intents_persisted": self.intents_persisted,
             "intents_published": self.intents_published,
@@ -282,7 +288,11 @@ class StrategyEngine:
         *,
         recovery_mode: RecoveryMode = RecoveryMode.FAIL,
         historical_position_provider: PositionSideProvider | None = None,
+        now_ms: int | None = None,
     ) -> StrategyBootstrapResult:
+        current = int(time.time() * 1000) if now_ms is None else now_ms
+        if current < 0:
+            raise ValueError("now_ms must be non-negative")
         async with self._processing_lock:
             try:
                 recovered = await self._flush_outbox()
@@ -316,8 +326,8 @@ class StrategyEngine:
                     validate_candles(low_all, timeframe_ms(config.low_timeframe))
                     validate_candles(high_all, timeframe_ms(config.high_timeframe))
                     state = self._states[symbol]
-                    state.low = low_all[-self.settings.low_window :]
-                    state.high = high_all[-self.settings.high_window :]
+                    state.low = list(low_all)
+                    state.high = list(high_all)
                     state.pending_low.clear()
 
                     checkpoint = await asyncio.to_thread(self._checkpoint, symbol)
@@ -330,20 +340,39 @@ class StrategyEngine:
                     missed = (
                         []
                         if checkpoint is None
-                        else [event for event in low_events if event.event_time > checkpoint.last_event_time]
+                        else [
+                            event
+                            for event in low_events
+                            if event.event_time > checkpoint.last_event_time
+                        ]
                     )
                     replayed = 0
                     reset = 0
+                    initial_evaluation = False
                     if checkpoint is None:
-                        await asyncio.to_thread(
-                            self.store.commit_evaluation,
-                            instance_id=self.settings.instance_id,
-                            symbol=symbol,
-                            event_time=latest.event_time,
-                            event_id=latest.event_id,
-                            updated_at=int(time.time() * 1000),
-                            intent=None,
+                        age = current - latest.event_time
+                        if age < 0:
+                            raise RuntimeError(
+                                f"latest low-timeframe candle closes in the future for {symbol}"
+                            )
+                        freshness = (
+                            self.settings.initial_freshness_intervals
+                            * timeframe_ms(config.low_timeframe)
                         )
+                        if age <= freshness:
+                            await self._evaluate_low_event(symbol, latest)
+                            initial_evaluation = True
+                            self.health.initial_evaluations += 1
+                        else:
+                            await asyncio.to_thread(
+                                self.store.commit_evaluation,
+                                instance_id=self.settings.instance_id,
+                                symbol=symbol,
+                                event_time=latest.event_time,
+                                event_id=latest.event_id,
+                                updated_at=current,
+                                intent=None,
+                            )
                     elif missed:
                         if recovery_mode is RecoveryMode.FAIL:
                             raise StrategyReplayRequired(
@@ -356,7 +385,7 @@ class StrategyEngine:
                                 symbol=symbol,
                                 event_time=latest.event_time,
                                 event_id=latest.event_id,
-                                updated_at=int(time.time() * 1000),
+                                updated_at=current,
                                 intent=None,
                             )
                             reset = len(missed)
@@ -378,6 +407,8 @@ class StrategyEngine:
                     checkpoint_after = await asyncio.to_thread(self._checkpoint, symbol)
                     if checkpoint_after is None:
                         raise RuntimeError("strategy bootstrap did not create a checkpoint")
+                    state.low = state.low[-self.settings.low_window :]
+                    state.high = state.high[-self.settings.high_window :]
                     outputs.append(
                         SymbolBootstrap(
                             symbol,
@@ -388,6 +419,7 @@ class StrategyEngine:
                             len(missed),
                             replayed,
                             reset,
+                            initial_evaluation,
                         )
                     )
                 self.health.bootstrapped = True
@@ -551,10 +583,7 @@ class StrategyEngine:
         await self.intent_bus.close()
 
     async def health_snapshot(self) -> dict[str, Any]:
-        pending = {
-            symbol: len(state.pending_low)
-            for symbol, state in self._states.items()
-        }
+        pending = {symbol: len(state.pending_low) for symbol, state in self._states.items()}
         return {
             "engine": self.health.snapshot(pending),
             "store": await asyncio.to_thread(self.store.metrics),
