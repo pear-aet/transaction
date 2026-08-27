@@ -122,6 +122,4 @@ def test_entry_stop_geometry_and_filters_are_strict() -> None:
         actions=frozenset({StrategyAction.EXIT}),
     )
     assert matching.matches(intent)
-    assert not StrategyIntentFilter(
-        actions=frozenset({StrategyAction.ENTER_LONG})
-    ).matches(intent)
+    assert not StrategyIntentFilter(actions=frozenset({StrategyAction.ENTER_LONG})).matches(intent)
