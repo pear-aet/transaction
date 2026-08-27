@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import random
 import time
@@ -7,6 +8,23 @@ from dataclasses import dataclass
 from typing import Any
 
 from .domain import Candle, FundingRate, MarketRules, RiskBracket
+
+_PERMANENT_CCXT_ERRORS = {
+    "ArgumentsRequired",
+    "AuthenticationError",
+    "BadRequest",
+    "BadSymbol",
+    "InvalidOrder",
+    "NotSupported",
+    "PermissionDenied",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class CandleGap:
+    left_timestamp: int
+    right_timestamp: int
+    missing_count: int
 
 
 @dataclass(slots=True)
@@ -34,11 +52,15 @@ class CcxtDataSource:
         return exchange_class(settings)
 
     def _retry(self, function, *args, **kwargs):
+        if self.max_retries <= 0:
+            raise ValueError("max_retries must be positive")
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
                 return function(*args, **kwargs)
-            except Exception as exc:  # CCXT normalizes several transient exception classes.
+            except Exception as exc:  # CCXT normalizes transport and exchange failures.
+                if exc.__class__.__name__ in _PERMANENT_CCXT_ERRORS:
+                    raise
                 last_error = exc
                 if attempt + 1 == self.max_retries:
                     break
@@ -57,7 +79,11 @@ class CcxtDataSource:
         limit: int,
         max_candles: int,
     ) -> list[Candle]:
+        if limit <= 0 or max_candles <= 0:
+            raise ValueError("limit and max_candles must be positive")
         timeframe_value = int(exchange.parse_timeframe(timeframe) * 1000)
+        if timeframe_value <= 0:
+            raise ValueError(f"invalid exchange timeframe: {timeframe}")
         cursor = since
         rows: list[list[float]] = []
         while len(rows) < max_candles:
@@ -138,6 +164,8 @@ class CcxtDataSource:
         limit: int = 1000,
         max_rates: int = 5000,
     ) -> list[FundingRate]:
+        if limit <= 0 or max_rates <= 0:
+            raise ValueError("limit and max_rates must be positive")
         exchange = self._exchange()
         try:
             if not exchange.has.get("fetchFundingRateHistory"):
@@ -154,7 +182,7 @@ class CcxtDataSource:
                 rows.extend(batch)
                 next_cursor = int(batch[-1]["timestamp"]) + 1
                 if cursor is not None and next_cursor <= cursor:
-                    break
+                    raise ValueError("non-advancing funding data cursor")
                 cursor = next_cursor
                 if len(batch) < batch_limit:
                     break
@@ -163,10 +191,13 @@ class CcxtDataSource:
                 for item in rows
                 if item.get("timestamp") is not None and item.get("fundingRate") is not None
             }
-            return [
+            result = [
                 FundingRate(timestamp, float(unique[timestamp]["fundingRate"]))
                 for timestamp in sorted(unique)
             ]
+            if any(not math.isfinite(item.rate) for item in result):
+                raise ValueError("funding history contains non-finite values")
+            return result
         finally:
             close = getattr(exchange, "close", None)
             if callable(close):
@@ -183,7 +214,7 @@ class CcxtDataSource:
             }
             price_filter = filters.get("PRICE_FILTER", {})
             lot_filter = filters.get("LOT_SIZE", {})
-            notional_filter = filters.get("MIN_NOTIONAL", {})
+            notional_filter = filters.get("MIN_NOTIONAL", {}) or filters.get("NOTIONAL", {})
             tick = float(price_filter.get("tickSize") or 10 ** -int(market["precision"]["price"]))
             step = float(lot_filter.get("stepSize") or 10 ** -int(market["precision"]["amount"]))
             minimum_quantity = float(
@@ -213,8 +244,9 @@ class CcxtDataSource:
                         )
                         maximum_leverage = max(maximum_leverage, float(tier["maxLeverage"]))
                 except Exception:
-                    # The Binance bracket endpoint is signed; public research still works
-                    # with a conservative tier until read-only credentials are configured.
+                    # Binance leverage tiers require a signed endpoint. Public research still
+                    # works with a deliberately conservative tier until read-only credentials
+                    # are configured.
                     brackets = []
             if not brackets:
                 brackets = [RiskBracket(0.0, 1e30, 0.01, 0.0)]
@@ -235,8 +267,13 @@ class CcxtDataSource:
 
 
 def timeframe_ms(value: str) -> int:
+    if len(value) < 2:
+        raise ValueError(f"unsupported timeframe: {value}")
     unit = value[-1]
-    amount = int(value[:-1])
+    try:
+        amount = int(value[:-1])
+    except ValueError as exc:
+        raise ValueError(f"unsupported timeframe: {value}") from exc
     factors = {"m": 60_000, "h": 3_600_000, "d": 86_400_000, "w": 604_800_000}
     if unit not in factors or amount <= 0:
         raise ValueError(f"unsupported timeframe: {value}")
@@ -249,17 +286,41 @@ def days_ago_ms(days: int) -> int:
     return int(time.time() * 1000) - days * 86_400_000
 
 
+def find_candle_gaps(candles: list[Candle], interval_ms: int) -> list[CandleGap]:
+    if interval_ms <= 0:
+        raise ValueError("interval_ms must be positive")
+    gaps: list[CandleGap] = []
+    for left, right in zip(candles, candles[1:], strict=False):
+        difference = right.timestamp - left.timestamp
+        if difference > interval_ms:
+            missing = difference // interval_ms - 1
+            gaps.append(CandleGap(left.timestamp, right.timestamp, int(missing)))
+    return gaps
+
+
 def validate_candles(candles: list[Candle], interval_ms: int) -> None:
     if interval_ms <= 0:
         raise ValueError("interval_ms must be positive")
     timestamps = [item.timestamp for item in candles]
     if timestamps != sorted(set(timestamps)):
         raise ValueError("candles contain duplicate or out-of-order timestamps")
-    gaps = [
-        (left, right)
-        for left, right in zip(timestamps, timestamps[1:], strict=False)
-        if right - left != interval_ms
-    ]
+    for candle in candles:
+        values = (candle.open, candle.high, candle.low, candle.close, candle.volume)
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError(f"candle at {candle.timestamp} contains non-finite values")
+        if min(candle.open, candle.high, candle.low, candle.close) <= 0:
+            raise ValueError(f"candle at {candle.timestamp} contains non-positive prices")
+        if candle.volume < 0:
+            raise ValueError(f"candle at {candle.timestamp} contains negative volume")
+        if candle.low > min(candle.open, candle.close):
+            raise ValueError(f"candle at {candle.timestamp} has an invalid low")
+        if candle.high < max(candle.open, candle.close):
+            raise ValueError(f"candle at {candle.timestamp} has an invalid high")
+    gaps = find_candle_gaps(candles, interval_ms)
     if gaps:
-        left, right = gaps[0]
-        raise ValueError(f"candle history contains a gap between {left} and {right}")
+        first = gaps[0]
+        raise ValueError(
+            "candle history contains a gap between "
+            f"{first.left_timestamp} and {first.right_timestamp} "
+            f"({first.missing_count} missing)"
+        )
