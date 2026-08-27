@@ -11,6 +11,10 @@ from .domain import Candle, FundingRate, finite_json
 from .engine import EngineState
 
 
+class MarketDataRevisionError(RuntimeError):
+    """Raised when a previously stored market fact changes."""
+
+
 class Repository:
     """Small transactional SQLite repository for market data, jobs and engine state."""
 
@@ -25,6 +29,7 @@ class Repository:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=30000")
         return connection
 
     def _initialize(self) -> None:
@@ -90,6 +95,64 @@ class Repository:
                 ],
             )
 
+    def store_candles_immutable(
+        self,
+        symbol: str,
+        timeframe: str,
+        candles: list[Candle],
+        price_type: str = "contract",
+    ) -> tuple[int, int]:
+        """Insert closed candles atomically; exact duplicates are harmless, revisions fail."""
+        inserted = 0
+        duplicates = 0
+        with self._lock, self._connect() as connection:
+            for item in candles:
+                row = connection.execute(
+                    """SELECT timestamp,open,high,low,close,volume FROM candles
+                    WHERE symbol=? AND timeframe=? AND price_type=? AND timestamp=?""",
+                    (symbol, timeframe, price_type, item.timestamp),
+                ).fetchone()
+                if row is not None:
+                    existing = Candle(*row)
+                    if existing != item:
+                        raise MarketDataRevisionError(
+                            f"closed candle revision rejected for {symbol} {timeframe} "
+                            f"{price_type} at {item.timestamp}"
+                        )
+                    duplicates += 1
+                    continue
+                connection.execute(
+                    "INSERT INTO candles VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        symbol,
+                        timeframe,
+                        price_type,
+                        item.timestamp,
+                        item.open,
+                        item.high,
+                        item.low,
+                        item.close,
+                        item.volume,
+                    ),
+                )
+                inserted += 1
+        return inserted, duplicates
+
+    def load_candle(
+        self,
+        symbol: str,
+        timeframe: str,
+        timestamp: int,
+        price_type: str = "contract",
+    ) -> Candle | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT timestamp,open,high,low,close,volume FROM candles
+                WHERE symbol=? AND timeframe=? AND price_type=? AND timestamp=?""",
+                (symbol, timeframe, price_type, timestamp),
+            ).fetchone()
+        return None if row is None else Candle(*row)
+
     def load_candles(
         self,
         symbol: str,
@@ -143,6 +206,31 @@ class Repository:
                 ON CONFLICT(symbol,timestamp) DO UPDATE SET rate=excluded.rate""",
                 [(symbol, item.timestamp, item.rate) for item in rates],
             )
+
+    def store_funding_immutable(self, symbol: str, rates: list[FundingRate]) -> tuple[int, int]:
+        """Insert funding settlements atomically without silent historical rewrites."""
+        inserted = 0
+        duplicates = 0
+        with self._lock, self._connect() as connection:
+            for item in rates:
+                row = connection.execute(
+                    "SELECT timestamp,rate FROM funding_rates WHERE symbol=? AND timestamp=?",
+                    (symbol, item.timestamp),
+                ).fetchone()
+                if row is not None:
+                    existing = FundingRate(*row)
+                    if existing != item:
+                        raise MarketDataRevisionError(
+                            f"funding-rate revision rejected for {symbol} at {item.timestamp}"
+                        )
+                    duplicates += 1
+                    continue
+                connection.execute(
+                    "INSERT INTO funding_rates VALUES (?, ?, ?)",
+                    (symbol, item.timestamp, item.rate),
+                )
+                inserted += 1
+        return inserted, duplicates
 
     def load_funding(self, symbol: str, since: int = 0) -> list[FundingRate]:
         with self._connect() as connection:
