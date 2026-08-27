@@ -1,7 +1,9 @@
+import pytest
+
 from crypto_quant.data_engine import MarketDataEngine
 from crypto_quant.domain import Candle, FundingRate
 from crypto_quant.market_stream import ClosedCandleEvent, MarkPriceEvent
-from crypto_quant.storage import Repository
+from crypto_quant.storage import MarketDataRevisionError, Repository
 
 
 class FakeSource:
@@ -34,9 +36,10 @@ def test_incremental_sync_resumes_after_latest_closed_bar(tmp_path) -> None:
     engine = MarketDataEngine(repository, source)
 
     first = engine.sync_candles("BTC/USDT:USDT", "1m", since=0)
+    assert first.fetched == 4
     assert first.stored == 4
 
-    second = engine.sync_candles("BTC/USDT:USDT", "1m")
+    second = engine.sync_candles("BTC/USDT:USDT", "1m", since=0)
     assert second.stored == 0
     assert source.candle_calls[-1][2] == 240_000
 
@@ -59,31 +62,42 @@ def test_live_gap_is_repaired_before_new_candle_is_written(tmp_path) -> None:
     assert engine.health.gaps_repaired == 1
 
 
-def test_duplicate_live_candle_is_idempotent(tmp_path) -> None:
+def test_duplicate_live_candle_is_idempotent_but_revision_is_rejected(tmp_path) -> None:
     repository = Repository(tmp_path / "quant.db")
     engine = MarketDataEngine(repository, FakeSource())
     event = ClosedCandleEvent("BTCUSDT", "1m", Candle(0, 10, 11, 9, 10, 1), 60_000)
 
     engine.ingest_event(event, symbol_map={"BTCUSDT": "BTC/USDT:USDT"})
     engine.ingest_event(event, symbol_map={"BTCUSDT": "BTC/USDT:USDT"})
-
     assert len(repository.load_candles("BTC/USDT:USDT", "1m")) == 1
+    assert engine.health.duplicate_candles == 1
+
+    revision = ClosedCandleEvent("BTCUSDT", "1m", Candle(0, 10, 11, 9, 10.5, 1), 60_001)
+    with pytest.raises(MarketDataRevisionError, match="revision"):
+        engine.ingest_event(revision, symbol_map={"BTCUSDT": "BTC/USDT:USDT"})
+    assert repository.load_candle("BTC/USDT:USDT", "1m", 0) == event.candle
+    assert engine.health.rejected_events == 1
 
 
-def test_funding_sync_resumes_after_last_timestamp(tmp_path) -> None:
+def test_funding_sync_resumes_and_historical_revision_is_rejected(tmp_path) -> None:
     repository = Repository(tmp_path / "quant.db")
     source = FakeSource()
     engine = MarketDataEngine(repository, source)
 
     engine.sync_funding("BTC/USDT:USDT", since=0)
-    result = engine.sync_funding("BTC/USDT:USDT")
+    result = engine.sync_funding("BTC/USDT:USDT", since=0)
 
     assert result == []
     assert source.funding_calls[-1][1] == 21
+    with pytest.raises(MarketDataRevisionError, match="revision"):
+        repository.store_funding_immutable("BTC/USDT:USDT", [FundingRate(20, 0.0003)])
+    assert repository.load_funding("BTC/USDT:USDT")[-1] == FundingRate(20, 0.0002)
 
 
-def test_mark_price_is_kept_as_latest_runtime_snapshot(tmp_path) -> None:
+def test_mark_price_snapshot_never_moves_backwards(tmp_path) -> None:
     engine = MarketDataEngine(Repository(tmp_path / "quant.db"), FakeSource())
-    event = MarkPriceEvent("BTCUSDT", 100.0, 99.5, 0.0001, 200, 100)
-    engine.ingest_event(event, symbol_map={"BTCUSDT": "BTC/USDT:USDT"})
-    assert engine.latest_mark_prices["BTC/USDT:USDT"] == event
+    latest = MarkPriceEvent("BTCUSDT", 100.0, 99.5, 0.0001, 200, 100)
+    stale = MarkPriceEvent("BTCUSDT", 90.0, 89.5, 0.0001, 200, 99)
+    engine.ingest_event(latest, symbol_map={"BTCUSDT": "BTC/USDT:USDT"})
+    engine.ingest_event(stale, symbol_map={"BTCUSDT": "BTC/USDT:USDT"})
+    assert engine.latest_mark_prices["BTC/USDT:USDT"] == latest
