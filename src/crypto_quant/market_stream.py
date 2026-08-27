@@ -58,7 +58,9 @@ def binance_stream_symbol(symbol: str) -> str:
     return base.lower()
 
 
-def parse_binance_stream_message(payload: str | bytes | dict[str, Any]) -> ClosedCandleEvent | MarkPriceEvent | None:
+def parse_binance_stream_message(
+    payload: str | bytes | dict[str, Any],
+) -> ClosedCandleEvent | MarkPriceEvent | None:
     if isinstance(payload, bytes):
         payload = payload.decode("utf-8")
     message = json.loads(payload) if isinstance(payload, str) else payload
@@ -111,6 +113,8 @@ class BinanceFuturesStream:
     ) -> None:
         if not symbols or not timeframes:
             raise ValueError("symbols and timeframes must not be empty")
+        if max_backoff_seconds <= 0:
+            raise ValueError("max_backoff_seconds must be positive")
         for timeframe in timeframes:
             timeframe_ms(timeframe)
         self.symbols = tuple(symbols)
@@ -137,14 +141,26 @@ class BinanceFuturesStream:
     def stop(self) -> None:
         self._stop.set()
 
+    async def _backoff(self, attempt: int) -> int:
+        delay = min(self.max_backoff_seconds, 0.5 * 2**attempt)
+        delay += random.random() * min(0.5, delay * 0.1)
+        try:
+            await asyncio.wait_for(self._stop.wait(), timeout=delay)
+        except TimeoutError:
+            pass
+        return min(attempt + 1, 10)
+
     async def events(self) -> AsyncIterator[ClosedCandleEvent | MarkPriceEvent]:
         try:
             from websockets.asyncio.client import connect
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("websockets dependency is required for real-time market data") from exc
+            raise RuntimeError(
+                "websockets dependency is required for real-time market data"
+            ) from exc
 
         attempt = 0
         while not self._stop.is_set():
+            clean_disconnect = False
             try:
                 async with connect(
                     self.url,
@@ -159,6 +175,7 @@ class BinanceFuturesStream:
                     attempt = 0
                     async for raw in websocket:
                         if self._stop.is_set():
+                            self.health.connected = False
                             return
                         self.health.last_message_ms = int(time.time() * 1000)
                         event = parse_binance_stream_message(raw)
@@ -171,19 +188,23 @@ class BinanceFuturesStream:
                                 continue
                             self.health.last_closed_candle_ms[key] = event.candle.timestamp
                         yield event
+                    clean_disconnect = True
             except asyncio.CancelledError:
+                self.health.connected = False
                 raise
             except Exception as exc:
                 self.health.connected = False
                 self.health.last_error = f"{exc.__class__.__name__}: {exc}"
                 self.health.reconnects += 1
-                delay = min(self.max_backoff_seconds, 0.5 * 2**attempt)
-                attempt = min(attempt + 1, 10)
-                delay += random.random() * min(0.5, delay * 0.1)
-                try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
-                except TimeoutError:
-                    pass
+                attempt = await self._backoff(attempt)
+                continue
+
+            self.health.connected = False
+            if clean_disconnect and not self._stop.is_set():
+                self.health.reconnects += 1
+                self.health.last_error = "stream ended without a close exception"
+                attempt = await self._backoff(attempt)
+
         self.health.connected = False
 
     async def run(self, handler: Callable[[ClosedCandleEvent | MarkPriceEvent], Any]) -> None:
