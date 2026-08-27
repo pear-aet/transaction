@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -263,6 +263,8 @@ def strategy_intent_from_signal(
         raise ValueError("strategy decisions require contract-price candles")
     action = StrategyAction(signal.action)
     payload = source_event.payload.to_dict()
+    if signal.timestamp != int(payload["open_time"]):
+        raise ValueError("strategy signal timestamp must match the source candle open time")
     reference_price = float(payload["close"])
     parameter_hash = strategy_parameter_hash(config)
     intent_id = _intent_id(
