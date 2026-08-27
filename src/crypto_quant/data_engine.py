@@ -85,7 +85,9 @@ class MarketDataEngine:
         interval = timeframe_ms(timeframe)
         latest = self._latest_timestamp(symbol, timeframe, price_type)
         cursor = since if since is not None else (None if latest is None else latest + interval)
-        fetcher = self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
+        fetcher = (
+            self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
+        )
         candles = fetcher(symbol, timeframe, cursor, max_candles=max_candles)
         validate_candles(candles, interval)
         if candles:
@@ -129,7 +131,9 @@ class MarketDataEngine:
         if missing_start > missing_end:
             return []
         expected = ((missing_end - missing_start) // interval) + 1
-        fetcher = self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
+        fetcher = (
+            self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
+        )
         repaired = fetcher(
             symbol,
             timeframe,
