@@ -27,6 +27,8 @@ class DataEngineHealth:
     last_sync_ms: int | None = None
     last_event_ms: int | None = None
     gaps_repaired: int = 0
+    duplicate_candles: int = 0
+    duplicate_funding_rates: int = 0
     rejected_events: int = 0
     last_error: str | None = None
 
@@ -38,19 +40,32 @@ class DataEngineHealth:
             "last_sync_ms": self.last_sync_ms,
             "last_event_ms": self.last_event_ms,
             "gaps_repaired": self.gaps_repaired,
+            "duplicate_candles": self.duplicate_candles,
+            "duplicate_funding_rates": self.duplicate_funding_rates,
             "rejected_events": self.rejected_events,
             "last_error": self.last_error,
         }
 
 
 class MarketDataEngine:
-    """Single gate for historical and live market data consumed by trading logic."""
+    """Single immutable gate for historical and live market data."""
 
     def __init__(self, repository: Repository, source: CcxtDataSource | None = None) -> None:
         self.repository = repository
         self.source = source or CcxtDataSource()
         self.health = DataEngineHealth()
         self.latest_mark_prices: dict[str, MarkPriceEvent] = {}
+
+    @staticmethod
+    def _incremental_cursor(
+        latest: int | None,
+        since: int | None,
+        step: int,
+    ) -> int | None:
+        if latest is None:
+            return since
+        next_value = latest + step
+        return next_value if since is None else max(since, next_value)
 
     def sync_candles(
         self,
@@ -61,16 +76,27 @@ class MarketDataEngine:
         price_type: str = "contract",
         max_candles: int = 5000,
     ) -> SyncResult:
+        if max_candles <= 0:
+            raise ValueError("max_candles must be positive")
         interval = timeframe_ms(timeframe)
         latest = self.repository.latest_candle_timestamp(symbol, timeframe, price_type)
-        cursor = since if since is not None else (None if latest is None else latest + interval)
+        cursor = self._incremental_cursor(latest, since, interval)
         fetcher = (
             self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
         )
-        candles = fetcher(symbol, timeframe, cursor, max_candles=max_candles)
-        validate_candles(candles, interval)
-        if candles:
-            self.repository.upsert_candles(symbol, timeframe, candles, price_type)
+        try:
+            candles = fetcher(symbol, timeframe, cursor, max_candles=max_candles)
+            validate_candles(candles, interval)
+            inserted, duplicates = self.repository.store_candles_immutable(
+                symbol,
+                timeframe,
+                candles,
+                price_type,
+            )
+        except Exception as exc:
+            self.health.last_error = f"{exc.__class__.__name__}: {exc}"
+            raise
+        self.health.duplicate_candles += duplicates
         self.health.last_sync_ms = int(time.time() * 1000)
         self.health.last_error = None
         return SyncResult(
@@ -78,7 +104,7 @@ class MarketDataEngine:
             timeframe,
             price_type,
             len(candles),
-            len(candles),
+            inserted,
             None if not candles else candles[0].timestamp,
             None if not candles else candles[-1].timestamp,
         )
@@ -86,13 +112,22 @@ class MarketDataEngine:
     def sync_funding(
         self, symbol: str, *, since: int | None = None, max_rates: int = 5000
     ) -> list[FundingRate]:
-        if since is None:
-            latest = self.repository.latest_funding_timestamp(symbol)
-            since = None if latest is None else latest + 1
-        rates = self.source.fetch_funding_rates(symbol, since, max_rates=max_rates)
-        if rates:
-            self.repository.upsert_funding(symbol, rates)
+        if max_rates <= 0:
+            raise ValueError("max_rates must be positive")
+        latest = self.repository.latest_funding_timestamp(symbol)
+        cursor = self._incremental_cursor(latest, since, 1)
+        try:
+            rates = self.source.fetch_funding_rates(symbol, cursor, max_rates=max_rates)
+            timestamps = [item.timestamp for item in rates]
+            if timestamps != sorted(set(timestamps)):
+                raise ValueError("funding history contains duplicate or out-of-order timestamps")
+            _, duplicates = self.repository.store_funding_immutable(symbol, rates)
+        except Exception as exc:
+            self.health.last_error = f"{exc.__class__.__name__}: {exc}"
+            raise
+        self.health.duplicate_funding_rates += duplicates
         self.health.last_sync_ms = int(time.time() * 1000)
+        self.health.last_error = None
         return rates
 
     def repair_gap(
@@ -106,6 +141,8 @@ class MarketDataEngine:
         interval = timeframe_ms(timeframe)
         if missing_start > missing_end:
             return []
+        if missing_start % interval or missing_end % interval:
+            raise ValueError("gap boundaries must be aligned to the candle timeframe")
         expected = ((missing_end - missing_start) // interval) + 1
         fetcher = (
             self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
@@ -118,12 +155,18 @@ class MarketDataEngine:
         )
         repaired = [item for item in repaired if missing_start <= item.timestamp <= missing_end]
         validate_candles(repaired, interval)
-        if len(repaired) != expected:
+        expected_timestamps = list(range(missing_start, missing_end + interval, interval))
+        if [item.timestamp for item in repaired] != expected_timestamps:
             raise RuntimeError(
                 f"gap repair incomplete for {symbol} {timeframe}: "
-                f"expected {expected}, got {len(repaired)}"
+                f"expected {expected} aligned candles, got {len(repaired)}"
             )
-        self.repository.upsert_candles(symbol, timeframe, repaired, price_type)
+        inserted, duplicates = self.repository.store_candles_immutable(
+            symbol,
+            timeframe,
+            repaired,
+            price_type,
+        )
         stored = self.repository.count_candles(
             symbol,
             timeframe,
@@ -131,10 +174,12 @@ class MarketDataEngine:
             missing_end,
             price_type,
         )
-        if stored != expected:
+        if stored != expected or inserted + duplicates != expected:
             raise RuntimeError("gap repair did not persist the complete interval")
+        self.health.duplicate_candles += duplicates
         self.health.gaps_repaired += 1
         self.health.last_sync_ms = int(time.time() * 1000)
+        self.health.last_error = None
         return repaired
 
     def ingest_closed_candle(
@@ -150,23 +195,23 @@ class MarketDataEngine:
         latest = self.repository.latest_candle_timestamp(
             canonical_symbol, event.timeframe, price_type
         )
-        if latest is not None:
-            if candle.timestamp <= latest:
-                self.repository.upsert_candles(
-                    canonical_symbol, event.timeframe, [candle], price_type
-                )
-                self.health.last_event_ms = event.event_time
-                return candle
-            expected_next = latest + interval
-            if candle.timestamp > expected_next:
-                self.repair_gap(
-                    canonical_symbol,
-                    event.timeframe,
-                    expected_next,
-                    candle.timestamp - interval,
-                    price_type,
-                )
-        self.repository.upsert_candles(canonical_symbol, event.timeframe, [candle], price_type)
+        if latest is not None and candle.timestamp > latest + interval:
+            self.repair_gap(
+                canonical_symbol,
+                event.timeframe,
+                latest + interval,
+                candle.timestamp - interval,
+                price_type,
+            )
+        inserted, duplicates = self.repository.store_candles_immutable(
+            canonical_symbol,
+            event.timeframe,
+            [candle],
+            price_type,
+        )
+        if inserted + duplicates != 1:
+            raise RuntimeError("closed candle persistence returned an invalid count")
+        self.health.duplicate_candles += duplicates
         self.health.last_event_ms = event.event_time
         self.health.last_error = None
         return candle
@@ -180,8 +225,10 @@ class MarketDataEngine:
         try:
             if isinstance(event, MarkPriceEvent):
                 canonical = (symbol_map or {}).get(event.symbol, event.symbol)
-                self.latest_mark_prices[canonical] = event
-                self.health.last_event_ms = event.event_time
+                previous = self.latest_mark_prices.get(canonical)
+                if previous is None or event.event_time >= previous.event_time:
+                    self.latest_mark_prices[canonical] = event
+                    self.health.last_event_ms = event.event_time
                 return event
             canonical = (symbol_map or {}).get(event.symbol, event.symbol)
             return self.ingest_closed_candle(event, canonical_symbol=canonical)
