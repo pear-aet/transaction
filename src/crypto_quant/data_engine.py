@@ -144,7 +144,8 @@ class MarketDataEngine:
         validate_candles(repaired, interval)
         if len(repaired) != expected:
             raise RuntimeError(
-                f"gap repair incomplete for {symbol} {timeframe}: expected {expected}, got {len(repaired)}"
+                f"gap repair incomplete for {symbol} {timeframe}: "
+                f"expected {expected}, got {len(repaired)}"
             )
         self.repository.upsert_candles(symbol, timeframe, repaired, price_type)
         if self._count_range(symbol, timeframe, price_type, missing_start, missing_end) != expected:
