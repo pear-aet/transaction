@@ -106,6 +106,36 @@ class Repository:
             ).fetchall()
         return [Candle(*row) for row in rows]
 
+    def latest_candle_timestamp(
+        self, symbol: str, timeframe: str, price_type: str = "contract"
+    ) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT max(timestamp) FROM candles
+                WHERE symbol=? AND timeframe=? AND price_type=?""",
+                (symbol, timeframe, price_type),
+            ).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
+
+    def count_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        start: int,
+        end: int,
+        price_type: str = "contract",
+    ) -> int:
+        if start > end:
+            return 0
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT count(*) FROM candles
+                WHERE symbol=? AND timeframe=? AND price_type=?
+                AND timestamp>=? AND timestamp<=?""",
+                (symbol, timeframe, price_type, start, end),
+            ).fetchone()
+        return int(row[0])
+
     def upsert_funding(self, symbol: str, rates: list[FundingRate]) -> None:
         with self._lock, self._connect() as connection:
             connection.executemany(
@@ -122,6 +152,13 @@ class Repository:
                 (symbol, since),
             ).fetchall()
         return [FundingRate(*row) for row in rows]
+
+    def latest_funding_timestamp(self, symbol: str) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT max(timestamp) FROM funding_rates WHERE symbol=?", (symbol,)
+            ).fetchone()
+        return None if row is None or row[0] is None else int(row[0])
 
     def save_engine_state(self, account_id: str, state: EngineState, timestamp: int) -> None:
         payload = json.dumps(state.to_dict(), ensure_ascii=False, allow_nan=False)
