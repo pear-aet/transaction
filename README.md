@@ -52,7 +52,7 @@
 - 至少32字符 API Token、恒定时间比较、每IP基础限流。
 - 可安装 PWA，支持手机浏览器查看账户、任务、策略结果和紧急停止。
 - 非 root Docker、只读容器、移除 Linux capabilities、健康检查。
-- GitHub Actions：Python 3.11/3.12、Ruff、Pytest、pip-audit、Docker构建和 CodeQL。
+- GitHub Actions：Python 3.11/3.12、Ruff、Pytest、pip-audit、Bandit和Docker构建。
 
 ## 安装
 

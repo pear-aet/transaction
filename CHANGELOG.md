@@ -10,3 +10,4 @@
 - 选优升级为隔离最终测试的 expanding walk-forward。
 - 新增成本与蒙特卡洛压力测试、PWA、认证、限流、日志和 CI。
 - 影子模式明确禁止订单提交；仍无实盘功能。
+- CI 按 Python 版本解析兼容依赖，关闭矩阵 fail-fast，并以 Bandit 取代私有仓库不可用的 CodeQL。
