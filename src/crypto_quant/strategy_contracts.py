@@ -19,6 +19,26 @@ class StrategyAction(StrEnum):
     EXIT = "exit"
 
 
+def _validate_strict_json(value: Any, path: str = "evidence") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} contains a non-finite number")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} contains a non-string object key")
+            _validate_strict_json(item, f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_strict_json(item, f"{path}[{index}]")
+        return
+    raise ValueError(f"{path} contains an unsupported value type: {type(value).__name__}")
+
+
 @dataclass(frozen=True, slots=True)
 class StrategyIntent:
     intent_id: str
@@ -39,6 +59,7 @@ class StrategyIntent:
     parameter_hash: str
     evidence: dict[str, Any]
     sequence: int = 0
+    storage_sequence: int | None = None
     schema_version: int = 1
 
     def __post_init__(self) -> None:
@@ -58,6 +79,8 @@ class StrategyIntent:
             raise ValueError("strategy intent text fields must not be empty")
         if min(self.decision_time, self.created_at, self.source_sequence, self.sequence) < 0:
             raise ValueError("strategy intent timestamps and sequences must be non-negative")
+        if self.storage_sequence is not None and self.storage_sequence <= 0:
+            raise ValueError("strategy intent storage_sequence must be positive")
         if self.schema_version <= 0:
             raise ValueError("strategy intent schema_version must be positive")
         if not math.isfinite(self.reference_price) or self.reference_price <= 0:
@@ -74,14 +97,18 @@ class StrategyIntent:
                 raise ValueError("short entry requires a stop above the reference price")
         elif self.action is StrategyAction.EXIT and self.stop_price is not None:
             raise ValueError("exit intent must not contain a stop price")
-        strict = json.dumps(finite_json(self.evidence), sort_keys=True, allow_nan=False)
-        if json.loads(strict) != finite_json(self.evidence):
-            raise ValueError("strategy evidence must be strict JSON")
+        _validate_strict_json(self.evidence)
+        json.dumps(self.evidence, sort_keys=True, allow_nan=False)
 
     def with_sequence(self, sequence: int) -> StrategyIntent:
         if sequence <= 0:
             raise ValueError("published strategy sequence must be positive")
         return replace(self, sequence=sequence)
+
+    def with_storage_sequence(self, sequence: int) -> StrategyIntent:
+        if sequence <= 0:
+            raise ValueError("strategy storage sequence must be positive")
+        return replace(self, storage_sequence=sequence)
 
     def semantic_dict(self) -> dict[str, Any]:
         return finite_json(
@@ -112,6 +139,7 @@ class StrategyIntent:
                 "created_at": self.created_at,
                 "source_sequence": self.source_sequence,
                 "sequence": self.sequence,
+                "storage_sequence": self.storage_sequence,
             }
         )
 
@@ -136,6 +164,11 @@ class StrategyIntent:
             parameter_hash=str(value["parameter_hash"]),
             evidence=dict(value.get("evidence") or {}),
             sequence=int(value.get("sequence", 0)),
+            storage_sequence=(
+                None
+                if value.get("storage_sequence") is None
+                else int(value["storage_sequence"])
+            ),
             schema_version=int(value.get("schema_version", 1)),
         )
 
@@ -155,6 +188,20 @@ class StrategyIntentFilter:
         if self.symbols is not None and intent.symbol not in self.symbols:
             return False
         return self.actions is None or intent.action in self.actions
+
+    def to_dict(self) -> dict[str, list[str] | None]:
+        return {
+            "strategy_ids": (
+                None if self.strategy_ids is None else sorted(self.strategy_ids)
+            ),
+            "instance_ids": (
+                None if self.instance_ids is None else sorted(self.instance_ids)
+            ),
+            "symbols": None if self.symbols is None else sorted(self.symbols),
+            "actions": (
+                None if self.actions is None else sorted(item.value for item in self.actions)
+            ),
+        }
 
 
 def strategy_parameter_payload(config: StrategyConfig) -> dict[str, Any]:
