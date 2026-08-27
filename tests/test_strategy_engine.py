@@ -1,5 +1,4 @@
 import asyncio
-from types import SimpleNamespace
 
 import pytest
 
@@ -159,7 +158,9 @@ def test_persisted_intent_survives_publish_failure_and_recovers_from_outbox(tmp_
         with pytest.raises(StrategyDeliveryError, match="subscriber"):
             await first_engine.handle_market_event(event(next_low, "15m", 2))
         assert store.metrics()["pending_intents"] == 1
-        assert store.load_checkpoint("primary", SYMBOL).last_event_time == next_low.timestamp + LOW_MS
+        assert (
+            store.load_checkpoint("primary", SYMBOL).last_event_time == next_low.timestamp + LOW_MS
+        )
         await first_engine.close()
 
         second_bus = StrategyIntentBus()
