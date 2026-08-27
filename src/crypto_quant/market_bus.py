@@ -25,6 +25,7 @@ class PublishResult:
     dropped_oldest: int
     disconnected: int
     blocked_subscribers: int
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +181,7 @@ class MarketEventBus:
             raise ValueError("dedupe_capacity must be positive")
         self.dedupe_capacity = dedupe_capacity
         self._seen: OrderedDict[str, None] = OrderedDict()
+        self._last_event_time_by_partition: dict[str, int] = {}
         self._subscribers: dict[str, _SubscriberState] = {}
         self._publish_lock = asyncio.Lock()
         self._state_lock = asyncio.Lock()
@@ -187,6 +189,7 @@ class MarketEventBus:
         self._sequence = 0
         self._published = 0
         self._duplicates = 0
+        self._stale = 0
         self._delivered = 0
         self._dropped_oldest = 0
         self._disconnected = 0
@@ -245,6 +248,11 @@ class MarketEventBus:
                 self._duplicates += 1
                 return PublishResult(None, True, 0, 0, 0, 0, 0)
 
+            previous_time = self._last_event_time_by_partition.get(event.partition_key)
+            if previous_time is not None and event.event_time < previous_time:
+                self._stale += 1
+                return PublishResult(None, False, 0, 0, 0, 0, 0, stale=True)
+
             self._sequence += 1
             published = event.with_sequence(self._sequence)
             async with self._state_lock:
@@ -273,6 +281,7 @@ class MarketEventBus:
             self._seen[event.event_id] = None
             while len(self._seen) > self.dedupe_capacity:
                 self._seen.popitem(last=False)
+            self._last_event_time_by_partition[event.partition_key] = event.event_time
 
             matched = sum(outcome.matched for outcome in outcomes)
             delivered = sum(outcome.delivered for outcome in outcomes)
@@ -316,6 +325,7 @@ class MarketEventBus:
             "last_sequence": self._sequence,
             "published": self._published,
             "duplicates": self._duplicates,
+            "stale": self._stale,
             "delivered": self._delivered,
             "dropped_oldest": self._dropped_oldest,
             "disconnected": self._disconnected,
@@ -326,6 +336,7 @@ class MarketEventBus:
             "max_latency_ms": self._max_latency_ms,
             "dedupe_size": len(self._seen),
             "dedupe_capacity": self.dedupe_capacity,
+            "partitions": len(self._last_event_time_by_partition),
             "active_subscribers": len(subscriber_snapshots),
             "subscribers": subscriber_snapshots,
         }
