@@ -196,6 +196,23 @@ class Repository:
         value["cancel_requested"] = bool(value["cancel_requested"])
         return value
 
+    def list_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
+        if not 1 <= limit <= 100:
+            raise ValueError("job limit must be in [1, 100]")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        output: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            for key in ("request", "result"):
+                if value.get(key):
+                    value[key] = json.loads(value[key])
+            value["cancel_requested"] = bool(value["cancel_requested"])
+            output.append(value)
+        return output
+
     def cancel_job(self, identifier: str, now_ms: int) -> bool:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(

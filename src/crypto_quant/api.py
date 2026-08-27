@@ -273,6 +273,15 @@ def select(request: ResearchRequest) -> dict[str, str]:
     return _submit(request, "select")
 
 
+@app.get("/api/jobs", dependencies=[Depends(_authorize)])
+def list_jobs(limit: int = 20) -> dict[str, Any]:
+    repository, _ = _services()
+    try:
+        return {"jobs": repository.list_jobs(limit)}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @app.get("/api/jobs/{job_id}", dependencies=[Depends(_authorize)])
 def get_job(job_id: str) -> dict[str, Any]:
     repository, _ = _services()

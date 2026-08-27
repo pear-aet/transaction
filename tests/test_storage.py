@@ -32,3 +32,11 @@ def test_only_one_strategy_version_is_enabled_per_symbol(tmp_path) -> None:
     versions = repository.list_strategy_versions("BTC")
     assert sum(item["enabled"] for item in versions) == 1
     assert next(item for item in versions if item["enabled"])["strategy_id"] == "b"
+
+
+def test_recent_jobs_are_returned_newest_first(tmp_path) -> None:
+    repository = Repository(tmp_path / "quant.db")
+    first = repository.create_job("backtest", {"symbol": "BTC"}, 1)
+    second = repository.create_job("select", {"symbol": "ETH"}, 2)
+    jobs = repository.list_jobs()
+    assert [item["id"] for item in jobs] == [second, first]
