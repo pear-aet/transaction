@@ -127,9 +127,7 @@ class StrategyIntent:
             decision_time=int(value["decision_time"]),
             created_at=int(value["created_at"]),
             reference_price=float(value["reference_price"]),
-            stop_price=(
-                None if value.get("stop_price") is None else float(value["stop_price"])
-            ),
+            stop_price=(None if value.get("stop_price") is None else float(value["stop_price"])),
             reason=str(value["reason"]),
             source_event_id=str(value["source_event_id"]),
             source_sequence=int(value.get("source_sequence", 0)),
