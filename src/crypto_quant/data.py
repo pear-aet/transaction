@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 import os
 import random
 import time
-from dataclasses import dataclass
 from typing import Any
 
 from .domain import Candle, FundingRate, MarketRules, RiskBracket
