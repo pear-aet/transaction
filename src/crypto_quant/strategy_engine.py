@@ -355,9 +355,8 @@ class StrategyEngine:
                             raise RuntimeError(
                                 f"latest low-timeframe candle closes in the future for {symbol}"
                             )
-                        freshness = (
-                            self.settings.initial_freshness_intervals
-                            * timeframe_ms(config.low_timeframe)
+                        freshness = self.settings.initial_freshness_intervals * timeframe_ms(
+                            config.low_timeframe
                         )
                         if age <= freshness:
                             await self._evaluate_low_event(symbol, latest)
