@@ -16,6 +16,8 @@ class IntentPublishResult:
     duplicate: bool
     matched_subscribers: int
     delivered: int
+    critical_matched: int
+    critical_delivered: int
     dropped_oldest: int
     disconnected: int
     blocked_subscribers: int
@@ -37,11 +39,13 @@ class _SubscriberState:
         intent_filter: StrategyIntentFilter,
         capacity: int,
         policy: BackpressurePolicy,
+        critical: bool,
     ) -> None:
         self.name = name
         self.intent_filter = intent_filter
         self.capacity = capacity
         self.policy = policy
+        self.critical = critical
         self._intents: deque[StrategyIntent] = deque()
         self._condition = asyncio.Condition()
         self.closed = False
@@ -117,6 +121,7 @@ class _SubscriberState:
             return {
                 "name": self.name,
                 "policy": self.policy.value,
+                "critical": self.critical,
                 "capacity": self.capacity,
                 "queue_depth": len(self._intents),
                 "closed": self.closed,
@@ -141,6 +146,10 @@ class StrategyIntentSubscription:
     @property
     def closed(self) -> bool:
         return self._state.closed
+
+    @property
+    def critical(self) -> bool:
+        return self._state.critical
 
     def __aiter__(self) -> StrategyIntentSubscription:
         return self
@@ -182,6 +191,7 @@ class StrategyIntentBus:
         self._published = 0
         self._duplicates = 0
         self._delivered = 0
+        self._critical_delivered = 0
         self._dropped_oldest = 0
         self._disconnected = 0
         self._blocked = 0
@@ -199,16 +209,20 @@ class StrategyIntentBus:
         intent_filter: StrategyIntentFilter | None = None,
         capacity: int = 1024,
         policy: BackpressurePolicy = BackpressurePolicy.BLOCK,
+        critical: bool = True,
     ) -> StrategyIntentSubscription:
         if not name:
             raise ValueError("subscription name must not be empty")
         if capacity <= 0:
             raise ValueError("subscription capacity must be positive")
+        if critical and policy is not BackpressurePolicy.BLOCK:
+            raise ValueError("critical strategy subscribers must use blocking backpressure")
         state = _SubscriberState(
             name,
             intent_filter or StrategyIntentFilter(),
             capacity,
             policy,
+            critical,
         )
         async with self._state_lock:
             if self._closed:
@@ -226,6 +240,13 @@ class StrategyIntentBus:
         await state.close(clear=True)
         return True
 
+    async def has_critical_match(self, intent: StrategyIntent) -> bool:
+        async with self._state_lock:
+            return any(
+                state.critical and not state.closed and state.intent_filter.matches(intent)
+                for state in self._subscribers.values()
+            )
+
     async def publish(self, intent: StrategyIntent) -> IntentPublishResult:
         async with self._publish_lock:
             if self._closed:
@@ -235,7 +256,17 @@ class StrategyIntentBus:
             if intent.intent_id in self._seen:
                 self._seen.move_to_end(intent.intent_id)
                 self._duplicates += 1
-                return IntentPublishResult(None, True, 0, 0, 0, 0, 0)
+                return IntentPublishResult(
+                    intent=None,
+                    duplicate=True,
+                    matched_subscribers=0,
+                    delivered=0,
+                    critical_matched=0,
+                    critical_delivered=0,
+                    dropped_oldest=0,
+                    disconnected=0,
+                    blocked_subscribers=0,
+                )
 
             self._sequence += 1
             published = intent.with_sequence(self._sequence)
@@ -268,23 +299,34 @@ class StrategyIntentBus:
 
             matched = sum(outcome.matched for outcome in outcomes)
             delivered = sum(outcome.delivered for outcome in outcomes)
+            critical_matched = sum(
+                outcome.matched and subscriber.critical
+                for subscriber, outcome in zip(subscribers, outcomes, strict=True)
+            )
+            critical_delivered = sum(
+                outcome.delivered and subscriber.critical
+                for subscriber, outcome in zip(subscribers, outcomes, strict=True)
+            )
             dropped = sum(outcome.dropped_oldest for outcome in outcomes)
             disconnected = sum(outcome.disconnected for outcome in outcomes)
             blocked = sum(outcome.blocked for outcome in outcomes)
             self._published += 1
             self._delivered += delivered
+            self._critical_delivered += critical_delivered
             self._dropped_oldest += dropped
             self._disconnected += disconnected
             self._blocked += blocked
             self._last_publish_ms = int(time.time() * 1000)
             return IntentPublishResult(
-                published,
-                False,
-                matched,
-                delivered,
-                dropped,
-                disconnected,
-                blocked,
+                intent=published,
+                duplicate=False,
+                matched_subscribers=matched,
+                delivered=delivered,
+                critical_matched=critical_matched,
+                critical_delivered=critical_delivered,
+                dropped_oldest=dropped,
+                disconnected=disconnected,
+                blocked_subscribers=blocked,
             )
 
     async def close(self) -> None:
@@ -307,6 +349,7 @@ class StrategyIntentBus:
             "published": self._published,
             "duplicates": self._duplicates,
             "delivered": self._delivered,
+            "critical_delivered": self._critical_delivered,
             "dropped_oldest": self._dropped_oldest,
             "disconnected": self._disconnected,
             "blocked_subscribers": self._blocked,
@@ -315,5 +358,6 @@ class StrategyIntentBus:
             "dedupe_size": len(self._seen),
             "dedupe_capacity": self.dedupe_capacity,
             "active_subscribers": len(snapshots),
+            "active_critical_subscribers": sum(item["critical"] for item in snapshots),
             "subscribers": snapshots,
         }
