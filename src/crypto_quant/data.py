@@ -9,7 +9,6 @@ from typing import Any
 
 from .domain import Candle, FundingRate, MarketRules, RiskBracket
 
-
 _PERMANENT_CCXT_ERRORS = {
     "ArgumentsRequired",
     "AuthenticationError",
