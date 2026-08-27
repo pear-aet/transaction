@@ -227,11 +227,7 @@ class MarketEvent:
             timeframe=value.get("timeframe"),
             price_type=value.get("price_type"),
             sequence=int(value.get("sequence", 0)),
-            storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
-            ),
+            storage_sequence=(None if value.get("storage_sequence") is None else int(value["storage_sequence"])),
             schema_version=int(value.get("schema_version", 1)),
         )
 
