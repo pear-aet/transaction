@@ -52,27 +52,6 @@ class MarketDataEngine:
         self.health = DataEngineHealth()
         self.latest_mark_prices: dict[str, MarkPriceEvent] = {}
 
-    def _latest_timestamp(self, symbol: str, timeframe: str, price_type: str) -> int | None:
-        with self.repository._connect() as connection:
-            row = connection.execute(
-                """SELECT max(timestamp) FROM candles
-                WHERE symbol=? AND timeframe=? AND price_type=?""",
-                (symbol, timeframe, price_type),
-            ).fetchone()
-        return None if row is None or row[0] is None else int(row[0])
-
-    def _count_range(
-        self, symbol: str, timeframe: str, price_type: str, start: int, end: int
-    ) -> int:
-        with self.repository._connect() as connection:
-            row = connection.execute(
-                """SELECT count(*) FROM candles
-                WHERE symbol=? AND timeframe=? AND price_type=?
-                AND timestamp>=? AND timestamp<=?""",
-                (symbol, timeframe, price_type, start, end),
-            ).fetchone()
-        return int(row[0])
-
     def sync_candles(
         self,
         symbol: str,
@@ -83,7 +62,7 @@ class MarketDataEngine:
         max_candles: int = 5000,
     ) -> SyncResult:
         interval = timeframe_ms(timeframe)
-        latest = self._latest_timestamp(symbol, timeframe, price_type)
+        latest = self.repository.latest_candle_timestamp(symbol, timeframe, price_type)
         cursor = since if since is not None else (None if latest is None else latest + interval)
         fetcher = (
             self.source.fetch_mark_candles if price_type == "mark" else self.source.fetch_candles
@@ -108,11 +87,8 @@ class MarketDataEngine:
         self, symbol: str, *, since: int | None = None, max_rates: int = 5000
     ) -> list[FundingRate]:
         if since is None:
-            with self.repository._connect() as connection:
-                row = connection.execute(
-                    "SELECT max(timestamp) FROM funding_rates WHERE symbol=?", (symbol,)
-                ).fetchone()
-            since = None if row is None or row[0] is None else int(row[0]) + 1
+            latest = self.repository.latest_funding_timestamp(symbol)
+            since = None if latest is None else latest + 1
         rates = self.source.fetch_funding_rates(symbol, since, max_rates=max_rates)
         if rates:
             self.repository.upsert_funding(symbol, rates)
@@ -148,7 +124,14 @@ class MarketDataEngine:
                 f"expected {expected}, got {len(repaired)}"
             )
         self.repository.upsert_candles(symbol, timeframe, repaired, price_type)
-        if self._count_range(symbol, timeframe, price_type, missing_start, missing_end) != expected:
+        stored = self.repository.count_candles(
+            symbol,
+            timeframe,
+            missing_start,
+            missing_end,
+            price_type,
+        )
+        if stored != expected:
             raise RuntimeError("gap repair did not persist the complete interval")
         self.health.gaps_repaired += 1
         self.health.last_sync_ms = int(time.time() * 1000)
@@ -164,7 +147,9 @@ class MarketDataEngine:
         interval = timeframe_ms(event.timeframe)
         candle = event.candle
         validate_candles([candle], interval)
-        latest = self._latest_timestamp(canonical_symbol, event.timeframe, price_type)
+        latest = self.repository.latest_candle_timestamp(
+            canonical_symbol, event.timeframe, price_type
+        )
         if latest is not None:
             if candle.timestamp <= latest:
                 self.repository.upsert_candles(
