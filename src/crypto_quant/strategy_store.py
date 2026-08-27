@@ -299,9 +299,7 @@ class StrategyStore:
             checkpoints = int(
                 connection.execute("SELECT count(*) FROM strategy_checkpoints").fetchone()[0]
             )
-            intents = int(
-                connection.execute("SELECT count(*) FROM strategy_intents").fetchone()[0]
-            )
+            intents = int(connection.execute("SELECT count(*) FROM strategy_intents").fetchone()[0])
             pending = int(
                 connection.execute(
                     "SELECT count(*) FROM strategy_intents WHERE published_at IS NULL"
