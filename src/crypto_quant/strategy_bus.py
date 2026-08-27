@@ -178,10 +178,16 @@ class StrategyIntentSubscription:
 class StrategyIntentBus:
     """Ordered fan-out bus for persisted strategy intents."""
 
-    def __init__(self, *, dedupe_capacity: int = 50_000) -> None:
+    def __init__(
+        self,
+        *,
+        dedupe_capacity: int = 50_000,
+        require_critical_delivery: bool = True,
+    ) -> None:
         if dedupe_capacity <= 0:
             raise ValueError("dedupe_capacity must be positive")
         self.dedupe_capacity = dedupe_capacity
+        self.require_critical_delivery = require_critical_delivery
         self._seen: OrderedDict[str, None] = OrderedDict()
         self._subscribers: dict[str, _SubscriberState] = {}
         self._publish_lock = asyncio.Lock()
@@ -192,6 +198,7 @@ class StrategyIntentBus:
         self._duplicates = 0
         self._delivered = 0
         self._critical_delivered = 0
+        self._rejected_no_critical = 0
         self._dropped_oldest = 0
         self._disconnected = 0
         self._blocked = 0
@@ -201,6 +208,20 @@ class StrategyIntentBus:
     @property
     def closed(self) -> bool:
         return self._closed
+
+    @staticmethod
+    def _rejected_result() -> IntentPublishResult:
+        return IntentPublishResult(
+            intent=None,
+            duplicate=False,
+            matched_subscribers=0,
+            delivered=0,
+            critical_matched=0,
+            critical_delivered=0,
+            dropped_oldest=0,
+            disconnected=0,
+            blocked_subscribers=0,
+        )
 
     async def subscribe(
         self,
@@ -268,11 +289,17 @@ class StrategyIntentBus:
                     blocked_subscribers=0,
                 )
 
-            self._sequence += 1
-            published = intent.with_sequence(self._sequence)
             async with self._state_lock:
                 subscribers = tuple(self._subscribers.values())
+            if self.require_critical_delivery and not any(
+                state.critical and not state.closed and state.intent_filter.matches(intent)
+                for state in subscribers
+            ):
+                self._rejected_no_critical += 1
+                return self._rejected_result()
 
+            self._sequence += 1
+            published = intent.with_sequence(self._sequence)
             outcomes: list[_DeliveryOutcome] = []
             try:
                 for subscriber in subscribers:
@@ -293,10 +320,6 @@ class StrategyIntentBus:
                         if current is not None and current.closed:
                             self._subscribers.pop(name, None)
 
-            self._seen[intent.intent_id] = None
-            while len(self._seen) > self.dedupe_capacity:
-                self._seen.popitem(last=False)
-
             matched = sum(outcome.matched for outcome in outcomes)
             delivered = sum(outcome.delivered for outcome in outcomes)
             critical_matched = sum(
@@ -310,13 +333,31 @@ class StrategyIntentBus:
             dropped = sum(outcome.dropped_oldest for outcome in outcomes)
             disconnected = sum(outcome.disconnected for outcome in outcomes)
             blocked = sum(outcome.blocked for outcome in outcomes)
-            self._published += 1
             self._delivered += delivered
             self._critical_delivered += critical_delivered
             self._dropped_oldest += dropped
             self._disconnected += disconnected
             self._blocked += blocked
             self._last_publish_ms = int(time.time() * 1000)
+
+            if self.require_critical_delivery and critical_delivered == 0:
+                self._rejected_no_critical += 1
+                return IntentPublishResult(
+                    intent=None,
+                    duplicate=False,
+                    matched_subscribers=matched,
+                    delivered=delivered,
+                    critical_matched=critical_matched,
+                    critical_delivered=0,
+                    dropped_oldest=dropped,
+                    disconnected=disconnected,
+                    blocked_subscribers=blocked,
+                )
+
+            self._seen[intent.intent_id] = None
+            while len(self._seen) > self.dedupe_capacity:
+                self._seen.popitem(last=False)
+            self._published += 1
             return IntentPublishResult(
                 intent=published,
                 duplicate=False,
@@ -350,6 +391,7 @@ class StrategyIntentBus:
             "duplicates": self._duplicates,
             "delivered": self._delivered,
             "critical_delivered": self._critical_delivered,
+            "rejected_no_critical": self._rejected_no_critical,
             "dropped_oldest": self._dropped_oldest,
             "disconnected": self._disconnected,
             "blocked_subscribers": self._blocked,
