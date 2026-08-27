@@ -32,6 +32,7 @@ class MarketRuntimeHealth:
     accepted: int = 0
     published: int = 0
     duplicates: int = 0
+    stale: int = 0
     failures: int = 0
     blocking_calls_completed: int = 0
     last_event_ms: int | None = None
@@ -50,6 +51,7 @@ class MarketRuntimeHealth:
             "accepted": self.accepted,
             "published": self.published,
             "duplicates": self.duplicates,
+            "stale": self.stale,
             "failures": self.failures,
             "blocking_calls_completed": self.blocking_calls_completed,
             "last_event_ms": self.last_event_ms,
@@ -207,9 +209,11 @@ class MarketRuntime:
                     received_at=received_at,
                 )
             result = await self.bus.publish(market_event)
-            self.health.last_event_ms = event.event_time
+            self.health.last_event_ms = market_event.event_time
             self.health.last_error = None
-            if result.duplicate:
+            if result.stale:
+                self.health.stale += 1
+            elif result.duplicate:
                 self.health.duplicates += 1
             elif result.event is not None:
                 self.health.published += 1
