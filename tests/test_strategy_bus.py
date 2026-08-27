@@ -76,7 +76,34 @@ def test_intent_bus_block_policy_never_drops_critical_intents() -> None:
         second = await subscription.get(timeout=1.0)
         assert [first.intent_id, second.intent_id] == [intent(1).intent_id, intent(2).intent_id]
         assert result.blocked_subscribers == 1
+        assert result.critical_delivered == 1
         assert (await bus.health_snapshot())["dropped_oldest"] == 0
+        await bus.close()
+
+    asyncio.run(scenario())
+
+
+def test_publication_is_rejected_without_a_matching_critical_subscriber() -> None:
+    async def scenario() -> None:
+        bus = StrategyIntentBus()
+        dashboard = await bus.subscribe(
+            "dashboard",
+            capacity=1,
+            policy=BackpressurePolicy.DROP_OLDEST,
+            critical=False,
+        )
+        rejected = await bus.publish(intent(1))
+        assert rejected.intent is None
+        assert rejected.duplicate is False
+        assert (await bus.health_snapshot())["rejected_no_critical"] == 1
+        with pytest.raises(TimeoutError):
+            await dashboard.get(timeout=0.01)
+        with pytest.raises(ValueError, match="blocking"):
+            await bus.subscribe(
+                "unsafe-risk",
+                policy=BackpressurePolicy.DROP_OLDEST,
+                critical=True,
+            )
         await bus.close()
 
     asyncio.run(scenario())
@@ -84,7 +111,7 @@ def test_intent_bus_block_policy_never_drops_critical_intents() -> None:
 
 def test_intent_filters_and_noncritical_drop_policy_are_explicit() -> None:
     async def scenario() -> None:
-        bus = StrategyIntentBus()
+        bus = StrategyIntentBus(require_critical_delivery=False)
         filtered = await bus.subscribe(
             "btc",
             intent_filter=StrategyIntentFilter(symbols=frozenset({"BTC/USDT:USDT"})),
@@ -93,6 +120,7 @@ def test_intent_filters_and_noncritical_drop_policy_are_explicit() -> None:
             "dashboard",
             capacity=1,
             policy=BackpressurePolicy.DROP_OLDEST,
+            critical=False,
         )
         eth = await bus.publish(intent(1, "ETH/USDT:USDT"))
         await bus.publish(intent(2))
