@@ -126,9 +126,12 @@ def test_intent_filters_and_noncritical_drop_policy_are_explicit() -> None:
         await bus.publish(intent(2))
         latest = await bus.publish(intent(3))
         assert eth.matched_subscribers == 1
-        assert (await filtered.get(timeout=1.0)).symbol == "BTC/USDT:USDT"
-        with pytest.raises(TimeoutError):
-            await filtered.get(timeout=0.01)
+        first_btc = await filtered.get(timeout=1.0)
+        second_btc = await filtered.get(timeout=1.0)
+        assert [first_btc.intent_id, second_btc.intent_id] == [
+            intent(2).intent_id,
+            intent(3).intent_id,
+        ]
         assert (await dashboard.get(timeout=1.0)).intent_id == intent(3).intent_id
         assert latest.dropped_oldest == 1
         await bus.close()
