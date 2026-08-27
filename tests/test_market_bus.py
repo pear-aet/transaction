@@ -99,6 +99,27 @@ def test_bus_assigns_one_global_order_and_suppresses_duplicates() -> None:
     asyncio.run(scenario())
 
 
+def test_partition_event_time_cannot_move_backwards() -> None:
+    async def scenario() -> None:
+        bus = MarketEventBus()
+        subscription = await bus.subscribe("risk")
+        latest = await bus.publish(mark_event(2))
+        stale = await bus.publish(mark_event(1))
+
+        assert latest.event is not None
+        assert stale.stale is True
+        assert stale.event is None
+        assert (await subscription.get(timeout=1.0)).event_time == 2
+        with pytest.raises(TimeoutError):
+            await subscription.get(timeout=0.01)
+        health = await bus.health_snapshot()
+        assert health["stale"] == 1
+        assert health["published"] == 1
+        await bus.close()
+
+    asyncio.run(scenario())
+
+
 def test_block_policy_applies_backpressure_without_losing_events() -> None:
     async def scenario() -> None:
         bus = MarketEventBus()
@@ -114,8 +135,10 @@ def test_block_policy_applies_backpressure_without_losing_events() -> None:
         first = await subscription.get(timeout=1.0)
         result = await asyncio.wait_for(pending, timeout=1.0)
         second = await subscription.get(timeout=1.0)
-        assert first.source_time == 900_000
-        assert second.source_time == 1_800_000
+        assert first.source_time == 1_799_999
+        assert second.source_time == 2_699_999
+        assert first.event_time == 1_800_000
+        assert second.event_time == 2_700_000
         assert result.blocked_subscribers == 1
         assert (await bus.health_snapshot())["dropped_oldest"] == 0
         await bus.close()
