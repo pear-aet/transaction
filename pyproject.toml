@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crypto-quant"
+version = "0.2.0"
+description = "Deterministic Binance perpetual research, portfolio paper and shadow system"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+  "ccxt>=4.5,<5",
+  "fastapi>=0.116,<1",
+  "python-dotenv>=1.2,<2",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.4,<9",
+  "ruff>=0.12,<1",
+]
+
+[project.urls]
+Repository = "https://github.com/pear-aet/transaction"
+
+[project.scripts]
+crypto-quant = "crypto_quant.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crypto_quant"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
