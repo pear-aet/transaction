@@ -207,9 +207,7 @@ class Repository:
                 [(symbol, item.timestamp, item.rate) for item in rates],
             )
 
-    def store_funding_immutable(
-        self, symbol: str, rates: list[FundingRate]
-    ) -> tuple[int, int]:
+    def store_funding_immutable(self, symbol: str, rates: list[FundingRate]) -> tuple[int, int]:
         """Insert funding settlements atomically without silent historical rewrites."""
         inserted = 0
         duplicates = 0
