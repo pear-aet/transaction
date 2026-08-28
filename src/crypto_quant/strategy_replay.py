@@ -28,6 +28,8 @@ class DurableIntentFilter:
     def __post_init__(self) -> None:
         if not self.delivery_states:
             raise ValueError("durable intent filter requires at least one delivery state")
+        if StrategyDeliveryState.PENDING in self.delivery_states:
+            raise ValueError("durable intent replay cannot include mutable pending state")
 
     def matches(self, value: StoredIntent) -> bool:
         return value.delivery_state in self.delivery_states and self.intent_filter.matches(
@@ -139,20 +141,28 @@ class StrategyReplayLedger:
             through_sequence=high_watermark,
             limit=limit,
         )
-        scanned_through = (
-            offset.sequence
-            if not rows
-            else int(rows[-1].intent.storage_sequence or offset.sequence)
-        )
-        matched = tuple(item for item in rows if selected_filter.matches(item))
+        scanned_through = offset.sequence
+        matched = []
+        skipped = 0
+        for item in rows:
+            if item.delivery_state is StrategyDeliveryState.PENDING:
+                break
+            storage_sequence = item.intent.storage_sequence
+            if storage_sequence is None:
+                raise RuntimeError("stored strategy intent has no storage sequence")
+            scanned_through = int(storage_sequence)
+            if selected_filter.matches(item):
+                matched.append(item)
+            else:
+                skipped += 1
         return StrategyReplayBatch(
             consumer,
             offset.filter_hash,
             offset.sequence,
             high_watermark,
             scanned_through,
-            matched,
-            len(rows) - len(matched),
+            tuple(matched),
+            skipped,
         )
 
     def commit_batch(
