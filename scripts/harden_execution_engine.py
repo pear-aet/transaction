@@ -122,15 +122,15 @@ replace_once(
     "                result = await self.flush_outbox(now_ms=current)\n",
     "                result = await self._flush_outbox_unlocked(now_ms=current)\n",
 )
-text_path = Path("src/crypto_quant/execution_engine.py")
-text = text_path.read_text(encoding="utf-8")
-old = "                        await self.flush_outbox(now_ms=current)\n"
-count = text.count(old)
-if count != 2:
-    raise SystemExit(f"expected two internal outbox calls, found {count}")
-text_path.write_text(
-    text.replace(old, "                        await self._flush_outbox_unlocked(now_ms=current)\n"),
-    encoding="utf-8",
+replace_once(
+    "src/crypto_quant/execution_engine.py",
+    "                        await self.flush_outbox(now_ms=current)\n",
+    "                        await self._flush_outbox_unlocked(now_ms=current)\n",
+)
+replace_once(
+    "src/crypto_quant/execution_engine.py",
+    "                    await self.flush_outbox(now_ms=current)\n",
+    "                    await self._flush_outbox_unlocked(now_ms=current)\n",
 )
 replace_once(
     "src/crypto_quant/execution_engine.py",
