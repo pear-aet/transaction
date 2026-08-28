@@ -219,7 +219,7 @@ def test_risk_reducing_exit_is_approved_during_halt_and_stale_snapshots() -> Non
         correlation_group="majors",
         stop_price=90,
     )
-    stale_time = DECISION_TIME - 1_000_000
+    stale_time = 1
     decision = evaluate_risk(
         context(
             strategy_intent=intent(StrategyAction.EXIT),
