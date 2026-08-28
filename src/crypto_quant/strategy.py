@@ -59,6 +59,11 @@ class StrategyContext:
             timestamps = [item.timestamp for item in candles]
             if timestamps != sorted(set(timestamps)):
                 raise ValueError(f"{name}-timeframe candles are duplicate or out of order")
+            if any(
+                current - previous != interval
+                for previous, current in zip(timestamps, timestamps[1:], strict=False)
+            ):
+                raise ValueError(f"{name}-timeframe context contains a gap")
             if any(item.timestamp + interval > self.decision_time for item in candles):
                 raise ValueError(f"{name}-timeframe context contains future data")
 
