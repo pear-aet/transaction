@@ -1,5 +1,7 @@
 from dataclasses import replace
 
+import pytest
+
 from crypto_quant.config import StrategyConfig
 from crypto_quant.domain import Candle
 from crypto_quant.strategy import StrategyContext, decide, evaluate_strategy
@@ -71,3 +73,19 @@ def test_risk_and_leverage_configuration_cannot_change_strategy_decision() -> No
         StrategyContext(tuple(low), tuple(high), risk_changed, decision_time, None)
     )
     assert first == second
+
+
+def test_strategy_context_rejects_internal_candle_gaps() -> None:
+    low = candles(100, LOW_MS)
+    high = candles(20, HIGH_MS)
+    gapped_low = tuple(low[:50] + low[51:])
+    config = StrategyConfig(
+        symbol="BTC/USDT:USDT",
+        high_timeframe="1h",
+        low_timeframe="15m",
+        entry_model="chan_fractal",
+    )
+    decision_time = low[-1].timestamp + LOW_MS
+
+    with pytest.raises(ValueError, match="contains a gap"):
+        StrategyContext(gapped_low, tuple(high), config, decision_time, None)
