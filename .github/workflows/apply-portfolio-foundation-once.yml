@@ -8,6 +8,7 @@ on:
       - .github/workflows/apply-portfolio-foundation-once.yml
       - scripts/patch_portfolio_foundation.py
       - scripts/patch_portfolio_test_imports.py
+      - scripts/patch_portfolio_test_corrections.py
 
 permissions:
   contents: write
@@ -42,6 +43,7 @@ jobs:
         run: |
           python scripts/patch_portfolio_foundation.py
           python scripts/patch_portfolio_test_imports.py
+          python scripts/patch_portfolio_test_corrections.py
 
       - name: Format, lint and test
         run: |
@@ -58,6 +60,7 @@ jobs:
           git rm .github/workflows/apply-portfolio-foundation-once.yml
           git rm scripts/patch_portfolio_foundation.py
           git rm scripts/patch_portfolio_test_imports.py
+          git rm scripts/patch_portfolio_test_corrections.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src tests
