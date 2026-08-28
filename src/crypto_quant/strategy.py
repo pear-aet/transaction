@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from .chan import ChanSnapshot, analyze
 from .config import StrategyConfig
+from .data import timeframe_ms
 from .domain import Candle, Direction, Fractal, FractalKind, Signal
 
 
@@ -22,6 +23,49 @@ class StrategySpec:
     license: str
     description: str
     parameter_grid: tuple[int, ...]
+    minimum_low_bars: int = 50
+    minimum_high_bars: int = 20
+
+    def __post_init__(self) -> None:
+        if not self.strategy_id or not self.version:
+            raise ValueError("strategy ID and version must not be empty")
+        if self.minimum_low_bars < 3 or self.minimum_high_bars < 3:
+            raise ValueError("strategy warmup requirements are too small")
+
+
+@dataclass(frozen=True, slots=True)
+class StrategyContext:
+    low_candles: tuple[Candle, ...]
+    high_candles: tuple[Candle, ...]
+    config: StrategyConfig
+    decision_time: int
+    position_side: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.decision_time < 0:
+            raise ValueError("decision_time must be non-negative")
+        if self.position_side not in {None, "long", "short"}:
+            raise ValueError("position_side must be long, short or None")
+        if not self.low_candles:
+            raise ValueError("strategy context requires at least one low-timeframe candle")
+        low_ms = timeframe_ms(self.config.low_timeframe)
+        high_ms = timeframe_ms(self.config.high_timeframe)
+        if high_ms <= low_ms or high_ms % low_ms:
+            raise ValueError("high timeframe must be a larger multiple of the low timeframe")
+        for name, candles, interval in (
+            ("low", self.low_candles, low_ms),
+            ("high", self.high_candles, high_ms),
+        ):
+            timestamps = [item.timestamp for item in candles]
+            if timestamps != sorted(set(timestamps)):
+                raise ValueError(f"{name}-timeframe candles are duplicate or out of order")
+            if any(
+                current - previous != interval
+                for previous, current in zip(timestamps, timestamps[1:], strict=False)
+            ):
+                raise ValueError(f"{name}-timeframe context contains a gap")
+            if any(item.timestamp + interval > self.decision_time for item in candles):
+                raise ValueError(f"{name}-timeframe context contains future data")
 
 
 STRATEGIES: dict[str, StrategySpec] = {
@@ -64,6 +108,13 @@ def strategy_registry() -> tuple[StrategySpec, ...]:
     return tuple(STRATEGIES.values())
 
 
+def strategy_spec(strategy_id: str) -> StrategySpec:
+    try:
+        return STRATEGIES[strategy_id]
+    except KeyError as exc:
+        raise ValueError(f"unsupported strategy: {strategy_id}") from exc
+
+
 def _latest_bottom(snapshot: ChanSnapshot) -> Fractal | None:
     return next((f for f in reversed(snapshot.fractals) if f.kind is FractalKind.BOTTOM), None)
 
@@ -90,18 +141,18 @@ def _structural_stop(low: ChanSnapshot, side: str, buffer: float, lookback: int)
     return base * (1 + buffer)
 
 
-def decide(
-    low_candles: list[Candle],
-    high_candles: list[Candle],
-    config: StrategyConfig,
-    position_side: str | None = None,
-) -> StrategyDecision:
+def evaluate_strategy(context: StrategyContext) -> StrategyDecision:
+    config = context.config
+    strategy_spec(config.entry_model)
+    low_candles = list(context.low_candles)
+    high_candles = list(context.high_candles)
     high = analyze(high_candles, config.min_stroke_separation)
     low = analyze(low_candles, config.min_stroke_separation)
     signal: Signal | None = None
     if len(low.candles) < 3:
         return StrategyDecision(signal, high, low)
 
+    position_side = context.position_side
     if position_side == "long" and high.trend is Direction.DOWN:
         signal = Signal(low.candles[-1].timestamp, "exit", "high_timeframe_reversal")
     elif position_side == "short" and high.trend is Direction.UP:
@@ -113,7 +164,6 @@ def decide(
     ):
         bottom = _latest_bottom(low)
         right_bar = low.candles[-1]
-        # The bottom at N-1 is only confirmed after N closes. Entry occurs next open.
         if (
             bottom is not None
             and bottom.index == len(low.candles) - 2
@@ -186,3 +236,23 @@ def decide(
             stop = _structural_stop(low, "short", config.stop_buffer, config.entry_lookback)
             signal = Signal(current.timestamp, "enter_short", "htf_down_ema_reject", stop)
     return StrategyDecision(signal, high, low)
+
+
+def decide(
+    low_candles: list[Candle],
+    high_candles: list[Candle],
+    config: StrategyConfig,
+    position_side: str | None = None,
+) -> StrategyDecision:
+    if not low_candles:
+        raise ValueError("strategy decision requires low-timeframe candles")
+    decision_time = low_candles[-1].timestamp + timeframe_ms(config.low_timeframe)
+    return evaluate_strategy(
+        StrategyContext(
+            tuple(low_candles),
+            tuple(high_candles),
+            config,
+            decision_time,
+            position_side,
+        )
+    )
