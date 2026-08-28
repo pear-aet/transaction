@@ -155,7 +155,7 @@ def test_persisted_intent_survives_publish_failure_and_recovers_from_outbox(tmp_
         repository.store_candles_immutable(SYMBOL, "1h", [boundary_high])
         repository.store_candles_immutable(SYMBOL, "15m", [next_low])
         await first_engine.handle_market_event(event(boundary_high, "1h", 1))
-        with pytest.raises(StrategyDeliveryError, match="subscriber"):
+        with pytest.raises(StrategyDeliveryError, match="critical delivery"):
             await first_engine.handle_market_event(event(next_low, "15m", 2))
         assert store.metrics()["pending_intents"] == 1
         assert (
