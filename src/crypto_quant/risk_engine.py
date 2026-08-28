@@ -16,7 +16,7 @@ from .risk_contracts import (
     RiskDecisionStatus,
     RiskPolicy,
 )
-from .risk_store import RiskDeliveryState, RiskStore, StoredRiskDecision
+from .risk_store import RiskDeliveryState, RiskStore
 from .strategy_contracts import StrategyIntent
 
 
@@ -169,8 +169,7 @@ class RiskEngine:
                 result = await self.decision_bus.publish(decision, now_ms=now_ms)
                 if result.decision is None and not result.duplicate:
                     raise RiskDeliveryError(
-                        f"approved risk decision has no critical delivery: "
-                        f"{decision.decision_id}"
+                        f"approved risk decision has no critical delivery: {decision.decision_id}"
                     )
                 await asyncio.to_thread(
                     self.store.mark_published,

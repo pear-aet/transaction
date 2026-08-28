@@ -130,10 +130,13 @@ def test_runtime_catches_up_durable_intents_then_processes_live_bus(tmp_path) ->
         recovered = await execution.get(timeout=1.0)
         assert recovered.intent_id == first.intent_id
         assert runtime.health.replayed_intents == 1
-        assert runtime.replay_ledger.offset(
-            "risk-upstream-v1",
-            runtime._durable_filter(),
-        ).sequence == first.storage_sequence
+        assert (
+            runtime.replay_ledger.offset(
+                "risk-upstream-v1",
+                runtime._durable_filter(),
+            ).sequence
+            == first.storage_sequence
+        )
 
         second = persist_strategy_intent(strategy_store, intent(2))
         published = await intent_bus.publish(second)

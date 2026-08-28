@@ -261,7 +261,15 @@ class RiskDecisionBus:
         await state.close(clear=True)
         return True
 
-    async def publish(self, decision: RiskDecision) -> RiskPublishResult:
+    async def publish(
+        self,
+        decision: RiskDecision,
+        *,
+        now_ms: int | None = None,
+    ) -> RiskPublishResult:
+        current = int(time.time() * 1000) if now_ms is None else now_ms
+        if current < 0:
+            raise ValueError("now_ms must be non-negative")
         async with self._publish_lock:
             if self._closed:
                 raise RuntimeError("risk decision bus is closed")
@@ -269,6 +277,8 @@ class RiskDecisionBus:
                 raise ValueError("only approved risk decisions may be published")
             if decision.storage_sequence is None:
                 raise ValueError("risk decision must be persisted before publication")
+            if current > decision.valid_until:
+                raise ValueError("expired risk decision cannot be published")
             if decision.sequence != 0:
                 raise ValueError("only unsequenced risk decisions may be published")
             if decision.decision_id in self._seen:
@@ -279,8 +289,7 @@ class RiskDecisionBus:
             async with self._state_lock:
                 subscribers = tuple(self._subscribers.values())
             critical_matched = sum(
-                subscriber.critical and subscriber.matches(decision)
-                for subscriber in subscribers
+                subscriber.critical and subscriber.matches(decision) for subscriber in subscribers
             )
             if self.require_critical_delivery and critical_matched == 0:
                 self._rejected_no_critical += 1
@@ -310,9 +319,7 @@ class RiskDecisionBus:
 
             matched = sum(outcome.matched for outcome in outcomes)
             delivered = sum(outcome.delivered for outcome in outcomes)
-            critical_delivered = sum(
-                outcome.delivered and outcome.critical for outcome in outcomes
-            )
+            critical_delivered = sum(outcome.delivered and outcome.critical for outcome in outcomes)
             dropped = sum(outcome.dropped_oldest for outcome in outcomes)
             disconnected = sum(outcome.disconnected for outcome in outcomes)
             blocked = sum(outcome.blocked for outcome in outcomes)
@@ -329,7 +336,7 @@ class RiskDecisionBus:
             self._dropped_oldest += dropped
             self._disconnected += disconnected
             self._blocked += blocked
-            self._last_publish_ms = int(time.time() * 1000)
+            self._last_publish_ms = current
             return RiskPublishResult(
                 published,
                 False,

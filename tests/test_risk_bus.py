@@ -93,9 +93,7 @@ def test_critical_bus_orders_persisted_approved_decisions_and_deduplicates() -> 
         bus = RiskDecisionBus()
         execution = await bus.subscribe("execution", capacity=10)
         values = [decision(index) for index in range(1, 6)]
-        results = await asyncio.gather(
-            *(bus.publish(value, now_ms=NOW) for value in values)
-        )
+        results = await asyncio.gather(*(bus.publish(value, now_ms=NOW) for value in values))
         consumed = [await execution.get(timeout=1.0) for _ in values]
 
         assert [item.sequence for item in consumed] == list(range(1, 6))

@@ -127,7 +127,9 @@ def test_rejected_decision_expires_at_evaluation_time() -> None:
 
 def test_future_entry_and_exit_intents_fail_closed() -> None:
     future_time = NOW + 1
-    future_entry = evaluate_risk(context(intent(StrategyAction.ENTER_LONG, decision_time=future_time)))
+    future_entry = evaluate_risk(
+        context(intent(StrategyAction.ENTER_LONG, decision_time=future_time))
+    )
     position = PositionRiskSnapshot(
         SYMBOL,
         "long",

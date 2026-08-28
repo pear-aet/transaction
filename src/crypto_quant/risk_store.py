@@ -152,9 +152,7 @@ class RiskStore:
         return RiskEvaluation(
             str(row["engine_instance_id"]),
             str(row["intent_id"]),
-            None
-            if row["intent_storage_sequence"] is None
-            else int(row["intent_storage_sequence"]),
+            None if row["intent_storage_sequence"] is None else int(row["intent_storage_sequence"]),
             str(row["decision_id"]),
             str(row["account_snapshot_id"]),
             str(row["market_snapshot_id"]),
@@ -304,6 +302,18 @@ class RiskStore:
             else:
                 instance = self._instance_from_row(row)
                 self._assert_instance(instance, decision)
+                connection.execute(
+                    "UPDATE risk_instances SET updated_at=? WHERE engine_instance_id=?",
+                    (updated_at, decision.engine_instance_id),
+                )
+                instance = RiskInstance(
+                    instance.engine_instance_id,
+                    instance.account_id,
+                    instance.policy_id,
+                    instance.policy_version,
+                    instance.policy_hash,
+                    updated_at,
+                )
 
             evaluation_row = connection.execute(
                 """SELECT * FROM risk_evaluations
@@ -326,11 +336,16 @@ class RiskStore:
                     raise RiskDecisionConflict(
                         f"risk decision semantics changed: {decision.decision_id}"
                     )
-                if stored.delivery_state not in {
-                    expected_state,
-                    RiskDeliveryState.PUBLISHED,
-                    RiskDeliveryState.EXPIRED,
-                }:
+                allowed_states = (
+                    {
+                        RiskDeliveryState.PENDING,
+                        RiskDeliveryState.PUBLISHED,
+                        RiskDeliveryState.EXPIRED,
+                    }
+                    if decision.status is RiskDecisionStatus.APPROVED
+                    else {RiskDeliveryState.RECORDED}
+                )
+                if stored.delivery_state not in allowed_states:
                     raise RiskDecisionConflict(
                         f"risk decision delivery disposition changed: {decision.decision_id}"
                     )
@@ -351,9 +366,7 @@ class RiskStore:
                     decision.intent_storage_sequence,
                     decision.symbol,
                     decision.status.value,
-                    None
-                    if decision.approved_action is None
-                    else decision.approved_action.value,
+                    None if decision.approved_action is None else decision.approved_action.value,
                     encoded,
                     expected_state.value,
                 ),
@@ -374,9 +387,7 @@ class RiskStore:
                     f"{competing.decision.decision_id} != {decision.decision_id}"
                 )
             if not self._same_semantics(stored.decision, decision):
-                raise RiskDecisionConflict(
-                    f"risk decision ID collision: {decision.decision_id}"
-                )
+                raise RiskDecisionConflict(f"risk decision ID collision: {decision.decision_id}")
             if stored.delivery_state is not expected_state:
                 raise RiskDecisionConflict(
                     f"risk decision delivery disposition changed: {decision.decision_id}"
@@ -422,16 +433,19 @@ class RiskStore:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT delivery_state FROM risk_decisions WHERE decision_id=?",
+                "SELECT * FROM risk_decisions WHERE decision_id=?",
                 (decision_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(f"risk decision not found: {decision_id}")
-            state = RiskDeliveryState(row["delivery_state"])
+            stored = self._stored_from_row(row)
+            state = stored.delivery_state
             if state is RiskDeliveryState.PUBLISHED:
                 return False
             if state is not RiskDeliveryState.PENDING:
                 raise ValueError(f"{state.value} risk decision cannot be published")
+            if published_at > stored.decision.valid_until:
+                raise ValueError("risk decision expired before publication")
             connection.execute(
                 """UPDATE risk_decisions
                 SET delivery_state='published',published_at=?
@@ -446,16 +460,19 @@ class RiskStore:
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT delivery_state FROM risk_decisions WHERE decision_id=?",
+                "SELECT * FROM risk_decisions WHERE decision_id=?",
                 (decision_id,),
             ).fetchone()
             if row is None:
                 raise KeyError(f"risk decision not found: {decision_id}")
-            state = RiskDeliveryState(row["delivery_state"])
+            stored = self._stored_from_row(row)
+            state = stored.delivery_state
             if state is RiskDeliveryState.EXPIRED:
                 return False
             if state is not RiskDeliveryState.PENDING:
                 raise ValueError(f"{state.value} risk decision cannot expire")
+            if expired_at <= stored.decision.valid_until:
+                raise ValueError("risk decision cannot expire before validity window ends")
             connection.execute(
                 """UPDATE risk_decisions
                 SET delivery_state='expired',expired_at=?
@@ -540,9 +557,7 @@ class RiskStore:
 
     def metrics(self) -> dict[str, int]:
         with self._connect() as connection:
-            instances = int(
-                connection.execute("SELECT count(*) FROM risk_instances").fetchone()[0]
-            )
+            instances = int(connection.execute("SELECT count(*) FROM risk_instances").fetchone()[0])
             evaluations = int(
                 connection.execute("SELECT count(*) FROM risk_evaluations").fetchone()[0]
             )
