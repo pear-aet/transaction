@@ -187,13 +187,9 @@ def test_reconciliation_applies_forward_fill_and_activates_protection(tmp_path) 
     assert len(report.updates) == 1
     refreshed = execution_store.load_command(stored.command.command_id)
     assert refreshed is not None
-    primary = next(
-        order for order in refreshed.orders if order.leg_type is OrderLegType.PRIMARY
-    )
+    primary = next(order for order in refreshed.orders if order.leg_type is OrderLegType.PRIMARY)
     protective = next(
-        order
-        for order in refreshed.orders
-        if order.leg_type is OrderLegType.PROTECTIVE_STOP
+        order for order in refreshed.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
     )
     assert primary.state is OrderState.PARTIALLY_FILLED
     assert protective.state is OrderState.ACKNOWLEDGED

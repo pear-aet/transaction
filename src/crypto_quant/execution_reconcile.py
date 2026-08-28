@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Iterable
+from typing import Any
 
 from .domain import finite_json
 from .execution import OrderTransitionError, apply_order_update
@@ -215,7 +216,7 @@ def reconcile_execution_orders(
         raise ValueError("observed reconciliation snapshot times must match")
 
     local_by_client = {order.client_order_id: order for order in local}
-    observed_by_client = {order.client_order_id: item for item in observed}
+    observed_by_client = {item.client_order_id: item for item in observed}
     matched: list[str] = []
     updates: list[OrderUpdate] = []
     issues: list[ReconciliationIssue] = []
@@ -228,7 +229,10 @@ def reconcile_execution_orders(
                     ReconciliationIssue(
                         ReconciliationIssueKind.MISSING_OBSERVED,
                         client_order_id,
-                        f"persisted {order.state.value} order is absent from complete broker ledger",
+                        (
+                            f"persisted {order.state.value} order is absent from "
+                            "complete broker ledger"
+                        ),
                     )
                 )
             continue

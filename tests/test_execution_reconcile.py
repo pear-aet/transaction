@@ -117,9 +117,7 @@ def test_missing_unknown_and_unexpected_activation_fail_closed() -> None:
         [],
         observed_at=NOW,
     )
-    assert [issue.kind for issue in missing.issues] == [
-        ReconciliationIssueKind.MISSING_OBSERVED
-    ]
+    assert [issue.kind for issue in missing.issues] == [ReconciliationIssueKind.MISSING_OBSERVED]
 
     unknown = reconcile_execution_orders(
         COMMAND_ID,
@@ -127,9 +125,7 @@ def test_missing_unknown_and_unexpected_activation_fail_closed() -> None:
         [observed(client_order_id="unknown_1")],
         observed_at=NOW,
     )
-    assert [issue.kind for issue in unknown.issues] == [
-        ReconciliationIssueKind.UNKNOWN_OBSERVED
-    ]
+    assert [issue.kind for issue in unknown.issues] == [ReconciliationIssueKind.UNKNOWN_OBSERVED]
 
     planned = reconcile_execution_orders(
         COMMAND_ID,
