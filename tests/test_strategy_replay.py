@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from crypto_quant.strategy_contracts import (
@@ -136,4 +138,26 @@ def test_consumer_filter_is_pinned_and_stale_batches_cannot_commit(tmp_path) -> 
             DurableIntentFilter(
                 intent_filter=StrategyIntentFilter(symbols=frozenset({"ETH/USDT:USDT"}))
             ),
+        )
+
+
+def test_replay_batch_cannot_commit_beyond_its_snapshot(tmp_path) -> None:
+    store = StrategyStore(tmp_path / "quant.db")
+    seed(store)
+    ledger = StrategyReplayLedger(store)
+    batch = ledger.read_batch("risk-v1")
+
+    with pytest.raises(ValueError, match="within its snapshot"):
+        ledger.commit_batch(
+            replace(batch, scanned_through=batch.high_watermark + 1),
+            updated_at=300,
+        )
+    with pytest.raises(ValueError, match="cannot exceed"):
+        ledger.commit_batch(
+            replace(
+                batch,
+                high_watermark=batch.high_watermark + 1,
+                scanned_through=batch.scanned_through + 1,
+            ),
+            updated_at=300,
         )
