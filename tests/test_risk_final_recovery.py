@@ -190,4 +190,6 @@ def test_legacy_event_engine_uses_one_conservative_default_correlation_group() -
     assert len(captured) == 1
     context = captured[0]
     assert context.market.correlation_group == "default"
-    assert {position.correlation_group for position in context.account.positions} == {"default"}
+    assert {position.correlation_group for position in context.account.positions} == {
+        "default"
+    }
