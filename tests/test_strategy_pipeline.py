@@ -39,6 +39,14 @@ async def wait_for_bootstrap(engine: StrategyEngine) -> None:
     raise AssertionError("strategy runtime did not finish bootstrap")
 
 
+async def wait_for_published(store: StrategyStore) -> None:
+    for _ in range(500):
+        if store.metrics()["published_intents"] == 1:
+            return
+        await asyncio.sleep(0.002)
+    raise AssertionError("strategy intent was delivered but not marked published")
+
+
 def test_market_event_bus_to_persisted_strategy_intent_pipeline(tmp_path) -> None:
     async def scenario() -> None:
         repository = Repository(tmp_path / "quant.db")
@@ -116,6 +124,7 @@ def test_market_event_bus_to_persisted_strategy_intent_pipeline(tmp_path) -> Non
         assert produced.source_event_id == low_event.event_id
         assert produced.storage_sequence == 1
         assert produced.sequence == 1
+        await wait_for_published(store)
         assert store.metrics()["published_intents"] == 1
 
         await runtime.stop()
