@@ -67,7 +67,7 @@ def test_event_engine_entry_halt_is_decided_by_risk_engine() -> None:
     assert rejected["risk_decision_id"].startswith("risk_decision:")
 
 
-def test_event_engine_invalid_stop_uses_risk_rejection_contract() -> None:
+def test_invalid_legacy_signal_fails_before_risk_evaluation() -> None:
     state = EngineState(10_000)
     engine = EventEngine(config(), state)
     state.pending[SYMBOL] = Signal(0, "enter_long", "bad_stop", 101)
@@ -77,4 +77,6 @@ def test_event_engine_invalid_stop_uses_risk_rejection_contract() -> None:
 
     assert state.positions == {}
     rejected = next(event for event in state.events if event["kind"] == "entry_rejected")
-    assert rejected["reason"] == RiskReason.INVALID_STOP.value
+    assert rejected["reason"] == "invalid_strategy_intent"
+    assert "stop below" in rejected["error"]
+    assert "risk_decision_id" not in rejected
