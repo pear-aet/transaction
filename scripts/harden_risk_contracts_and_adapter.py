@@ -96,7 +96,9 @@ replace_once(
             }
             if opening:
                 if self.reduce_only or self.required_margin <= 0 or self.stop_price is None:
-                    raise ValueError("approved entry requires margin, stop and non-reduce-only plan")
+                    raise ValueError(
+                        "approved entry requires margin, stop and non-reduce-only plan"
+                    )
             elif not self.reduce_only or self.required_margin != 0 or self.stop_price is not None:
                 raise ValueError("approved exit must be reduce-only without new margin or stop")
         else:
@@ -124,14 +126,18 @@ replace_once(
                 if RiskReason.APPROVED_ENTRY not in self.reasons:
                     raise ValueError("approved entry requires the approved_entry reason")
                 if self.reduce_only or self.required_margin <= 0 or self.stop_price is None:
-                    raise ValueError("approved entry requires margin, stop and non-reduce-only plan")
+                    raise ValueError(
+                        "approved entry requires margin, stop and non-reduce-only plan"
+                    )
             else:
                 if self.requested_action is not StrategyAction.EXIT:
                     raise ValueError("approved exit does not match the strategy request")
                 if RiskReason.APPROVED_EXIT not in self.reasons:
                     raise ValueError("approved exit requires the approved_exit reason")
                 if not self.reduce_only or self.required_margin != 0 or self.stop_price is not None:
-                    raise ValueError("approved exit must be reduce-only without new margin or stop")
+                    raise ValueError(
+                        "approved exit must be reduce-only without new margin or stop"
+                    )
         else:
             if self.approved_action is not None or self.reduce_only:
                 raise ValueError("rejected risk decision cannot contain an approved action")
