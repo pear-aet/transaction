@@ -329,17 +329,11 @@ class ExecutionStore:
             command=command,
             delivery_state=ExecutionDeliveryState(row["delivery_state"]),
             orders=self._orders_for_command(connection, command.command_id),
-            dispatched_at=(
-                None if row["dispatched_at"] is None else int(row["dispatched_at"])
-            ),
-            completed_at=(
-                None if row["completed_at"] is None else int(row["completed_at"])
-            ),
+            dispatched_at=(None if row["dispatched_at"] is None else int(row["dispatched_at"])),
+            completed_at=(None if row["completed_at"] is None else int(row["completed_at"])),
             expired_at=None if row["expired_at"] is None else int(row["expired_at"]),
             failed_at=None if row["failed_at"] is None else int(row["failed_at"]),
-            failure_reason=(
-                None if row["failure_reason"] is None else str(row["failure_reason"])
-            ),
+            failure_reason=(None if row["failure_reason"] is None else str(row["failure_reason"])),
         )
 
     def _load_stored(
@@ -763,17 +757,13 @@ class ExecutionStore:
             "commands": sum(command_counts.values()),
             "recorded_commands": command_counts.get(ExecutionDeliveryState.RECORDED.value, 0),
             "pending_commands": command_counts.get(ExecutionDeliveryState.PENDING.value, 0),
-            "dispatched_commands": command_counts.get(
-                ExecutionDeliveryState.DISPATCHED.value, 0
-            ),
+            "dispatched_commands": command_counts.get(ExecutionDeliveryState.DISPATCHED.value, 0),
             "completed_commands": command_counts.get(ExecutionDeliveryState.COMPLETED.value, 0),
             "expired_commands": command_counts.get(ExecutionDeliveryState.EXPIRED.value, 0),
             "failed_commands": command_counts.get(ExecutionDeliveryState.FAILED.value, 0),
             "orders": sum(order_counts.values()),
             "planned_orders": order_counts.get(OrderState.PLANNED.value, 0),
-            "partially_filled_orders": order_counts.get(
-                OrderState.PARTIALLY_FILLED.value, 0
-            ),
+            "partially_filled_orders": order_counts.get(OrderState.PARTIALLY_FILLED.value, 0),
             "filled_orders": order_counts.get(OrderState.FILLED.value, 0),
             "failed_orders": order_counts.get(OrderState.FAILED.value, 0),
             "order_updates": updates,
