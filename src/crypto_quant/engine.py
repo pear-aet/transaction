@@ -408,7 +408,17 @@ class EventEngine:
         )
 
     def _open(self, symbol: str, signal: Signal, bar: Candle) -> None:
-        decision = self._entry_risk_decision(symbol, signal, bar)
+        try:
+            decision = self._entry_risk_decision(symbol, signal, bar)
+        except ValueError as exc:
+            self._record(
+                bar.timestamp,
+                "entry_rejected",
+                symbol=symbol,
+                reason="invalid_strategy_intent",
+                error=str(exc),
+            )
+            return
         if decision.status is RiskDecisionStatus.REJECTED:
             self._record(
                 bar.timestamp,
