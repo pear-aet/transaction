@@ -224,6 +224,74 @@ class ExecutionEngine:
                 self.health.order_updates += 1
         return applied
 
+    async def _enforce_entry_oco(
+        self,
+        stored: StoredExecutionCommand,
+        now_ms: int,
+    ) -> StoredExecutionCommand:
+        if self.policy.mode is not ExecutionMode.SIMULATION or self.broker is None:
+            return stored
+        primary = [order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY]
+        protective = [
+            order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+        ]
+        if not protective:
+            return stored
+        if len(primary) != 1 or len(protective) != 1:
+            raise RuntimeError("entry command has invalid OCO order topology")
+        primary_order = primary[0]
+        protective_order = protective[0]
+        if protective_order.cumulative_filled_quantity <= 0:
+            return stored
+
+        if not primary_order.terminal and primary_order.remaining_quantity > 1e-12:
+            cancellation = await asyncio.to_thread(
+                self.broker.cancel,
+                primary_order,
+                event_time=now_ms,
+                reason="protective_fill_cancel_primary_remainder",
+            )
+            await self._apply_updates(cancellation)
+            refreshed = await asyncio.to_thread(
+                self.store.load_command,
+                stored.command.command_id,
+            )
+            if refreshed is None:
+                raise RuntimeError("entry command disappeared after primary OCO cancellation")
+            stored = refreshed
+            primary_order = next(
+                order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY
+            )
+            protective_order = next(
+                order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+            )
+
+        open_quantity = (
+            primary_order.cumulative_filled_quantity - protective_order.cumulative_filled_quantity
+        )
+        if open_quantity < -1e-12:
+            raise RuntimeError("protective execution exceeded primary exposure")
+        if (
+            math.isclose(open_quantity, 0.0, rel_tol=1e-12, abs_tol=1e-12)
+            and not protective_order.terminal
+            and protective_order.remaining_quantity > 1e-12
+        ):
+            cancellation = await asyncio.to_thread(
+                self.broker.cancel,
+                protective_order,
+                event_time=now_ms,
+                reason="flat_position_cancel_protective_remainder",
+            )
+            await self._apply_updates(cancellation)
+            refreshed = await asyncio.to_thread(
+                self.store.load_command,
+                stored.command.command_id,
+            )
+            if refreshed is None:
+                raise RuntimeError("entry command disappeared after protective OCO cancellation")
+            stored = refreshed
+        return stored
+
     async def _reconcile_command(
         self,
         stored: StoredExecutionCommand,
@@ -249,18 +317,54 @@ class ExecutionEngine:
             OrderState.FAILED,
         }
         failure_reason: str | None = None
-        if primary_order.state in failed_states:
-            failure_reason = f"primary_{primary_order.state.value}"
-        elif primary_order.state is OrderState.CANCELED:
-            if primary_order.cumulative_filled_quantity <= 0:
-                failure_reason = "primary_canceled_without_fill"
-        if protective:
+        completed = False
+        if not protective:
+            if primary_order.state is OrderState.FILLED:
+                completed = True
+            elif primary_order.state in failed_states | {OrderState.CANCELED}:
+                failure_reason = f"primary_{primary_order.state.value}_incomplete"
+        else:
+            if len(protective) != 1:
+                raise RuntimeError("persisted entry command has invalid protection topology")
             protective_order = protective[0]
-            if protective_order.state in failed_states:
+            open_quantity = (
+                primary_order.cumulative_filled_quantity
+                - protective_order.cumulative_filled_quantity
+            )
+            if open_quantity < -1e-12:
+                raise RuntimeError("persisted protection exceeds primary exposure")
+            open_quantity = max(0.0, open_quantity)
+            if (
+                primary_order.cumulative_filled_quantity <= 1e-12
+                and primary_order.state in failed_states | {OrderState.CANCELED}
+            ):
+                failure_reason = f"primary_{primary_order.state.value}_without_fill"
+            elif protective_order.state in failed_states:
                 failure_reason = f"protective_{protective_order.state.value}"
-            elif protective_order.state is OrderState.CANCELED:
-                if primary_order.cumulative_filled_quantity > 0:
-                    failure_reason = "protective_canceled_with_open_fill"
+            elif protective_order.state is OrderState.CANCELED and open_quantity > 1e-12:
+                failure_reason = "protective_canceled_with_open_fill"
+            elif (
+                primary_order.state in failed_states
+                and primary_order.cumulative_filled_quantity > 1e-12
+                and math.isclose(open_quantity, 0.0, rel_tol=1e-12, abs_tol=1e-12)
+            ):
+                failure_reason = f"primary_{primary_order.state.value}_partial_fill_closed"
+            else:
+                completed = (
+                    primary_order.terminal
+                    and primary_order.cumulative_filled_quantity > 1e-12
+                    and math.isclose(
+                        open_quantity,
+                        0.0,
+                        rel_tol=1e-12,
+                        abs_tol=1e-12,
+                    )
+                    and protective_order.state
+                    in {
+                        OrderState.FILLED,
+                        OrderState.CANCELED,
+                    }
+                )
 
         if failure_reason is not None:
             if stored.delivery_state is ExecutionDeliveryState.DISPATCHED:
@@ -274,16 +378,6 @@ class ExecutionEngine:
                 if changed:
                     self.health.commands_failed += 1
             return
-
-        completed = False
-        if not protective:
-            completed = primary_order.state is OrderState.FILLED
-        else:
-            protective_order = protective[0]
-            completed = (
-                primary_order.state is OrderState.FILLED
-                and protective_order.state is OrderState.FILLED
-            )
         if completed and stored.delivery_state is ExecutionDeliveryState.DISPATCHED:
             changed = await asyncio.to_thread(
                 self.store.mark_completed,
@@ -395,6 +489,7 @@ class ExecutionEngine:
             if not active:
                 break
             for stored in active:
+                stored = await self._enforce_entry_oco(stored, now_ms)
                 await self._reconcile_command(stored, now_ms)
                 reconciled += 1
                 sequence = stored.command.storage_sequence
@@ -653,6 +748,11 @@ class ExecutionEngine:
                             raise RuntimeError(
                                 "execution command disappeared after protection activation"
                             )
+                if (
+                    commit.order.leg_type is OrderLegType.PROTECTIVE_STOP
+                    and commit.order.cumulative_filled_quantity > 0
+                ):
+                    stored = await self._enforce_entry_oco(stored, update.event_time)
                 await self._reconcile_command(stored, update.event_time)
                 refreshed = await asyncio.to_thread(
                     self.store.load_command,

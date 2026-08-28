@@ -28,6 +28,7 @@ from crypto_quant.risk import evaluate_risk
 from crypto_quant.risk_contracts import (
     AccountRiskSnapshot,
     MarketRiskSnapshot,
+    PositionRiskSnapshot,
     RiskContext,
     RiskDecisionStatus,
     RiskPolicy,
@@ -111,6 +112,73 @@ def persist_risk_decision(
     stored = commit.stored_decision.decision
     if published:
         store.mark_published(stored.decision_id, NOW + index)
+    return stored
+
+
+def persist_exit_risk_decision(store: RiskStore, *, published: bool):
+    intent = StrategyIntent(
+        intent_id="intent-exit",
+        strategy_id="test",
+        strategy_version="1.0.0",
+        instance_id="strategy-primary",
+        symbol=SYMBOL,
+        action=StrategyAction.EXIT,
+        decision_time=DECISION_TIME,
+        created_at=DECISION_TIME,
+        reference_price=100,
+        stop_price=None,
+        reason="execution_exit_test",
+        source_event_id="market-exit",
+        source_sequence=99,
+        high_timeframe="1h",
+        low_timeframe="15m",
+        parameter_hash="strategy-hash",
+        evidence={},
+        storage_sequence=99,
+    )
+    position = PositionRiskSnapshot(
+        SYMBOL,
+        "long",
+        quantity=2,
+        entry_price=100,
+        mark_price=100,
+        initial_risk=50,
+        maintenance_margin_rate=0.005,
+        stop_price=90,
+    )
+    account = AccountRiskSnapshot(
+        "account-exit",
+        "paper",
+        DECISION_TIME,
+        10_000,
+        9_000,
+        position.notional * position.maintenance_margin_rate,
+        10_000,
+        10_000,
+        0,
+        (position,),
+    )
+    market = MarketRiskSnapshot(
+        "risk-market-exit",
+        SYMBOL,
+        DECISION_TIME,
+        100,
+        rules(),
+    )
+    decision = evaluate_risk(
+        RiskContext(
+            "risk-primary",
+            intent,
+            account,
+            market,
+            RiskPolicy(),
+            NOW,
+        )
+    )
+    assert decision.status is RiskDecisionStatus.APPROVED
+    stored = store.commit_evaluation(decision, updated_at=NOW).stored_decision.decision
+    if published:
+        store.mark_published(stored.decision_id, NOW)
     return stored
 
 
@@ -477,3 +545,166 @@ def test_protective_fill_cannot_exceed_primary_filled_exposure(tmp_path) -> None
     with pytest.raises(ExecutionUpdateConflict, match="exceeds primary filled exposure"):
         asyncio.run(engine.record_order_update(overfill))
     assert execution_store.load_order_update(overfill.update_id) is None
+
+
+def test_protective_fill_cancels_both_remainders_and_completes_flat_entry(
+    tmp_path,
+) -> None:
+    risk_store = RiskStore(tmp_path / "risk.db")
+    decision = persist_risk_decision(risk_store, published=True)
+    broker = SimulatedBroker()
+    engine, _, execution_store = make_engine(
+        tmp_path,
+        risk_store,
+        policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+        broker=broker,
+    )
+    planned = asyncio.run(engine.plan_decision(decision, now_ms=NOW + 2))
+    stored = execution_store.load_command(planned.command.command_id)
+    assert stored is not None
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    primary_quantity = primary.quantity / 2
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                primary,
+                fill_quantity=primary_quantity,
+                fill_price=100.1,
+                fee=0.1,
+                event_time=NOW + 3,
+            )
+        )
+    )
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                protective,
+                fill_quantity=primary_quantity,
+                fill_price=99,
+                fee=0.1,
+                event_time=NOW + 4,
+            )
+        )
+    )
+
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    assert stored.delivery_state is ExecutionDeliveryState.COMPLETED
+    assert primary.state is OrderState.CANCELED
+    assert protective.state is OrderState.CANCELED
+    assert primary.cumulative_filled_quantity == pytest.approx(primary_quantity)
+    assert protective.cumulative_filled_quantity == pytest.approx(primary_quantity)
+    assert execution_store.command_transitions(stored.command.command_id)[-1].new_state is (
+        ExecutionDeliveryState.COMPLETED
+    )
+
+
+def test_partial_protection_cancels_primary_remainder_without_closing_command(
+    tmp_path,
+) -> None:
+    risk_store = RiskStore(tmp_path / "risk.db")
+    decision = persist_risk_decision(risk_store, published=True)
+    broker = SimulatedBroker()
+    engine, _, execution_store = make_engine(
+        tmp_path,
+        risk_store,
+        policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+        broker=broker,
+    )
+    planned = asyncio.run(engine.plan_decision(decision, now_ms=NOW + 2))
+    stored = execution_store.load_command(planned.command.command_id)
+    assert stored is not None
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    primary_quantity = primary.quantity / 2
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                primary,
+                fill_quantity=primary_quantity,
+                fill_price=100.1,
+                fee=0.1,
+                event_time=NOW + 3,
+            )
+        )
+    )
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    first_protection = primary_quantity / 2
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                protective,
+                fill_quantity=first_protection,
+                fill_price=99,
+                fee=0.05,
+                event_time=NOW + 4,
+            )
+        )
+    )
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    assert stored.delivery_state is ExecutionDeliveryState.DISPATCHED
+    assert primary.state is OrderState.CANCELED
+    assert protective.state is OrderState.PARTIALLY_FILLED
+
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                protective,
+                fill_quantity=primary_quantity - first_protection,
+                fill_price=99,
+                fee=0.05,
+                event_time=NOW + 5,
+            )
+        )
+    )
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    assert stored.delivery_state is ExecutionDeliveryState.COMPLETED
+    assert protective.state is OrderState.CANCELED
+
+
+def test_partial_exit_cancellation_fails_instead_of_remaining_dispatched(tmp_path) -> None:
+    risk_store = RiskStore(tmp_path / "risk.db")
+    decision = persist_exit_risk_decision(risk_store, published=True)
+    broker = SimulatedBroker()
+    engine, _, execution_store = make_engine(
+        tmp_path,
+        risk_store,
+        policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+        broker=broker,
+    )
+    planned = asyncio.run(engine.plan_decision(decision, now_ms=NOW + 2))
+    stored = execution_store.load_command(planned.command.command_id)
+    assert stored is not None
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                primary,
+                fill_quantity=primary.quantity / 2,
+                fill_price=99.9,
+                fee=0.1,
+                event_time=NOW + 3,
+            )
+        )
+    )
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    for update in broker.cancel(
+        primary,
+        event_time=NOW + 4,
+        reason="partial_exit_cancel",
+    ):
+        stored = asyncio.run(engine.record_order_update(update))
+
+    assert stored.delivery_state is ExecutionDeliveryState.FAILED
+    assert stored.failure_reason == "primary_canceled_incomplete"

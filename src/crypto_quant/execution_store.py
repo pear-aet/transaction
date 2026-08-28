@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -624,10 +625,30 @@ class ExecutionStore:
                 }:
                     raise ValueError("dispatch requires a submitted primary order")
             elif target is ExecutionDeliveryState.COMPLETED:
-                if len(primary) != 1 or primary[0].state is not OrderState.FILLED:
-                    raise ValueError("completion requires a filled primary order")
-                if protective and any(order.state is not OrderState.FILLED for order in protective):
-                    raise ValueError("entry completion requires filled protective closure")
+                if len(primary) != 1:
+                    raise ValueError("completion requires one primary order")
+                primary_order = primary[0]
+                if not protective:
+                    if primary_order.state is not OrderState.FILLED:
+                        raise ValueError("exit completion requires a filled primary order")
+                else:
+                    if len(protective) != 1:
+                        raise ValueError("entry completion requires one protective order")
+                    protective_order = protective[0]
+                    if not primary_order.terminal or primary_order.cumulative_filled_quantity <= 0:
+                        raise ValueError("entry completion requires terminal filled exposure")
+                    if protective_order.state not in {
+                        OrderState.FILLED,
+                        OrderState.CANCELED,
+                    }:
+                        raise ValueError("entry completion requires terminal protective closure")
+                    if not math.isclose(
+                        primary_order.cumulative_filled_quantity,
+                        protective_order.cumulative_filled_quantity,
+                        rel_tol=1e-12,
+                        abs_tol=1e-12,
+                    ):
+                        raise ValueError("entry completion requires zero remaining exposure")
             elif target is ExecutionDeliveryState.EXPIRED:
                 if any(order.state is not OrderState.PLANNED for order in orders):
                     raise ValueError("command with submitted orders cannot expire")

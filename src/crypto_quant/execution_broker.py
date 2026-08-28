@@ -36,6 +36,14 @@ class ExecutionBroker(Protocol):
         now_ms: int,
     ) -> tuple[OrderUpdate, ...]: ...
 
+    def cancel(
+        self,
+        order: ExecutionOrder,
+        *,
+        event_time: int,
+        reason: str,
+    ) -> tuple[OrderUpdate, ...]: ...
+
 
 class ShadowBroker:
     """Explicit non-broker used to prove shadow mode has no dispatch path."""
@@ -57,6 +65,16 @@ class ShadowBroker:
     ) -> tuple[OrderUpdate, ...]:
         del command, orders, now_ms
         raise ExecutionBrokerError("shadow execution has no protection dispatch capability")
+
+    def cancel(
+        self,
+        order: ExecutionOrder,
+        *,
+        event_time: int,
+        reason: str,
+    ) -> tuple[OrderUpdate, ...]:
+        del order, event_time, reason
+        raise ExecutionBrokerError("shadow execution has no cancellation capability")
 
 
 class SimulatedBroker:

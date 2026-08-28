@@ -8,6 +8,7 @@ from crypto_quant.execution_contracts import (
     ExecutionMarketSnapshot,
     ExecutionMode,
     ExecutionPolicy,
+    OrderLegType,
     OrderState,
 )
 from crypto_quant.execution_engine import ExecutionEngine, ExecutionEngineSettings
@@ -193,5 +194,75 @@ def test_pending_acknowledged_order_recovers_after_command_ttl(tmp_path) -> None
         assert recovered.delivery_state is ExecutionDeliveryState.DISPATCHED
         transitions = execution_store.command_transitions(command.command_id)
         assert transitions[0].evidence == {"source": "pending_order_recovery"}
+
+    asyncio.run(scenario())
+
+
+def test_startup_reconciliation_finishes_oco_after_protective_fill_crash(
+    tmp_path,
+) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "quant.db"
+        risk_store = RiskStore(database)
+        decision = persisted_decision(risk_store)
+        execution_store = ExecutionStore(database)
+        broker = SimulatedBroker()
+        engine = ExecutionEngine(
+            ExecutionEngineSettings("execution-primary", "paper"),
+            ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+            execution_market,
+            store=execution_store,
+            risk_store=risk_store,
+            broker=broker,
+        )
+        planned = await engine.plan_decision(decision, now_ms=NOW)
+        stored = execution_store.load_command(planned.command.command_id)
+        assert stored is not None
+        primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+        primary_quantity = primary.quantity / 2
+        stored = await engine.record_order_update(
+            broker.fill(
+                primary,
+                fill_quantity=primary_quantity,
+                fill_price=100.1,
+                fee=0.1,
+                event_time=NOW + 1,
+            )
+        )
+        protective = next(
+            order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+        )
+        execution_store.apply_order_update(
+            broker.fill(
+                protective,
+                fill_quantity=primary_quantity,
+                fill_price=99,
+                fee=0.1,
+                event_time=NOW + 2,
+            )
+        )
+
+        restarted = ExecutionEngine(
+            ExecutionEngineSettings("execution-primary", "paper"),
+            ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+            execution_market,
+            store=execution_store,
+            risk_store=risk_store,
+            broker=broker,
+        )
+        result = await restarted.bootstrap(now_ms=NOW + 3)
+        recovered = execution_store.load_command(planned.command.command_id)
+
+        assert result.reconciled == 1
+        assert recovered is not None
+        assert recovered.delivery_state is ExecutionDeliveryState.COMPLETED
+        primary = next(
+            order for order in recovered.orders if order.leg_type is OrderLegType.PRIMARY
+        )
+        protective = next(
+            order for order in recovered.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+        )
+        assert primary.state is OrderState.CANCELED
+        assert protective.state is OrderState.CANCELED
 
     asyncio.run(scenario())
