@@ -181,6 +181,7 @@ class ExecutionRuntime:
 
     async def _periodic_flush(self) -> None:
         await self.execution_engine.flush_outbox(now_ms=self.clock())
+        await self._catch_up()
         self.health.periodic_flushes += 1
 
     async def run(self) -> None:

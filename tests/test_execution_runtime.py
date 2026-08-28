@@ -198,9 +198,11 @@ def test_runtime_catches_up_published_risk_then_processes_live_bus(tmp_path) -> 
         risk_store.mark_published(second.decision_id, NOW + 20)
 
         await wait_until(
-            lambda: runtime.health.live_decisions == 1
-            and execution_store.metrics()["commands"] == 2
-            and execution_store.metrics()["pending_commands"] == 0,
+            lambda: (
+                runtime.health.live_decisions == 1
+                and execution_store.metrics()["commands"] == 2
+                and execution_store.metrics()["pending_commands"] == 0
+            ),
             "execution runtime did not recover the live source-publication race",
         )
         second_command = execution_store.load_by_source_decision(
@@ -257,10 +259,13 @@ def test_periodic_catch_up_releases_a_published_upstream_barrier_without_bus_eve
             "periodic durable catch-up did not release the upstream barrier",
         )
         assert provider.calls == 2
-        assert execution_store.load_by_source_decision(
-            "execution-primary",
-            second.decision_id,
-        ) is not None
+        assert (
+            execution_store.load_by_source_decision(
+                "execution-primary",
+                second.decision_id,
+            )
+            is not None
+        )
         assert (
             runtime.replay_ledger.offset(
                 "execution-upstream-v1",

@@ -696,6 +696,23 @@ class ExecutionStore:
             storage_sequence = int(cursor.lastrowid)
         return OrderUpdateCommit(updated, False, storage_sequence, current.state)
 
+    def load_order_update(self, update_id: str) -> StoredOrderUpdate | None:
+        if not update_id:
+            raise ValueError("update_id must not be empty")
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM execution_order_updates WHERE update_id=?",
+                (update_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return StoredOrderUpdate(
+            update=self._decode_update(str(row["payload"])),
+            storage_sequence=int(row["storage_sequence"]),
+            prior_state=OrderState(row["prior_state"]),
+            new_state=OrderState(row["new_state"]),
+        )
+
     def order_updates(self, order_id: str) -> list[StoredOrderUpdate]:
         with self._connect() as connection:
             rows = connection.execute(

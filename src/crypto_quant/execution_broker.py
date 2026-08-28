@@ -147,9 +147,7 @@ class SimulatedBroker:
 
     @staticmethod
     def _protective(orders: tuple[ExecutionOrder, ...]) -> ExecutionOrder | None:
-        protective = [
-            order for order in orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
-        ]
+        protective = [order for order in orders if order.leg_type is OrderLegType.PROTECTIVE_STOP]
         if len(protective) > 1:
             raise ExecutionBrokerError("simulation command has multiple protective stops")
         return None if not protective else protective[0]
