@@ -92,6 +92,22 @@ replace_once(
 )
 replace_once(
     "src/crypto_quant/execution_contracts.py",
+    '''    def to_dict(self) -> dict[str, Any]:
+        return finite_json(
+            {
+                **self.semantic_dict(),
+                "created_at": self.created_at,
+''',
+    '''    def to_dict(self) -> dict[str, Any]:
+        return finite_json(
+            {
+                **self.semantic_dict(),
+                "orders": [order.to_dict() for order in self.orders],
+                "created_at": self.created_at,
+''',
+)
+replace_once(
+    "src/crypto_quant/execution_contracts.py",
     '''        if self.cumulative_filled_quantity > 0:
             if self.average_fill_price is None or self.average_fill_price <= 0:
                 raise ValueError("filled update requires an average fill price")
@@ -131,5 +147,20 @@ replace_once(
     if update.new_state is OrderState.PARTIALLY_FILLED:
         if update.cumulative_filled_quantity <= order.cumulative_filled_quantity + 1e-12:
             raise OrderTransitionError("partial-fill update must increase filled quantity")
+''',
+)
+replace_once(
+    "tests/test_execution.py",
+    '''    with pytest.raises(ExecutionCommandMismatch, match="quantity"):
+        validate_execution_command(
+            selected_context,
+            replace(command, quantity=command.quantity + 1),
+        )
+''',
+    '''    with pytest.raises(ExecutionCommandMismatch, match="approval_price"):
+        validate_execution_command(
+            selected_context,
+            replace(command, approval_price=command.approval_price + 0.1),
+        )
 ''',
 )
