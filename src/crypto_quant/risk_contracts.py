@@ -525,8 +525,19 @@ class RiskDecision:
         if self.status is RiskDecisionStatus.APPROVED:
             if self.approved_action is None or self.quantity <= 0 or self.notional <= 0:
                 raise ValueError("approved risk decision requires an executable plan")
-            if self.leverage < 1 or self.required_margin <= 0:
-                raise ValueError("approved risk decision requires leverage and margin")
+            if self.leverage < 1:
+                raise ValueError("approved risk decision requires valid leverage")
+            opening = self.approved_action in {
+                RiskApprovedAction.OPEN_LONG,
+                RiskApprovedAction.OPEN_SHORT,
+            }
+            if opening:
+                if self.reduce_only or self.required_margin <= 0 or self.stop_price is None:
+                    raise ValueError(
+                        "approved entry requires margin, stop and non-reduce-only plan"
+                    )
+            elif not self.reduce_only or self.required_margin != 0 or self.stop_price is not None:
+                raise ValueError("approved exit must be reduce-only without new margin or stop")
         else:
             if self.approved_action is not None or self.reduce_only:
                 raise ValueError("rejected risk decision cannot contain an approved action")
@@ -628,9 +639,7 @@ class RiskDecision:
             reasons=tuple(RiskReason(reason) for reason in value["reasons"]),
             reference_price=float(value["reference_price"]),
             approval_price=float(value["approval_price"]),
-            stop_price=(
-                None if value.get("stop_price") is None else float(value["stop_price"])
-            ),
+            stop_price=(None if value.get("stop_price") is None else float(value["stop_price"])),
             quantity=float(value["quantity"]),
             notional=float(value["notional"]),
             leverage=float(value["leverage"]),
@@ -648,9 +657,7 @@ class RiskDecision:
             evidence=dict(value.get("evidence") or {}),
             sequence=int(value.get("sequence", 0)),
             storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
             ),
             schema_version=int(value.get("schema_version", 1)),
         )

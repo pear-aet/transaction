@@ -50,8 +50,7 @@ def _ceil_integer(value: float) -> float:
 def _round_stop(value: float, tick: float, side: str) -> float:
     rounding = ROUND_DOWN if side == "long" else ROUND_UP
     return float(
-        (Decimal(str(value)) / Decimal(str(tick))).to_integral_value(rounding)
-        * Decimal(str(tick))
+        (Decimal(str(value)) / Decimal(str(tick))).to_integral_value(rounding) * Decimal(str(tick))
     )
 
 
@@ -189,9 +188,7 @@ def _approve_exit(
     account = context.account
     policy = context.policy
     action = (
-        RiskApprovedAction.CLOSE_LONG
-        if position.side == "long"
-        else RiskApprovedAction.CLOSE_SHORT
+        RiskApprovedAction.CLOSE_LONG if position.side == "long" else RiskApprovedAction.CLOSE_SHORT
     )
     quantity = position.quantity
     notional = position.notional
@@ -209,11 +206,7 @@ def _approve_exit(
     buffer_ratio = (
         1.0
         if gross_after <= 0
-        else (
-            account.equity
-            - maintenance_after
-            - gross_after * policy.liquidation_fee_rate
-        )
+        else (account.equity - maintenance_after - gross_after * policy.liquidation_fee_rate)
         / gross_after
     )
     reasons = (RiskReason.APPROVED_EXIT,)
@@ -315,8 +308,7 @@ def _candidate_for_bracket(
     buffer_numerator = (
         account.equity
         - account.maintenance_margin
-        - account.gross_notional
-        * (policy.liquidation_fee_rate + policy.min_liquidation_buffer)
+        - account.gross_notional * (policy.liquidation_fee_rate + policy.min_liquidation_buffer)
     )
     buffer_denominator = (
         policy.fee_rate
@@ -452,9 +444,8 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
     base_budget = account.equity * policy.risk_per_trade * volatility_scale
     symbol_room = account.equity * policy.max_symbol_risk - account.symbol_risk(intent.symbol)
     portfolio_room = account.equity * policy.max_portfolio_risk - account.open_risk
-    group_room = (
-        account.equity * policy.max_group_risk
-        - account.group_risk(market.correlation_group)
+    group_room = account.equity * policy.max_group_risk - account.group_risk(
+        market.correlation_group
     )
     if symbol_room <= 0:
         reasons.append(RiskReason.SYMBOL_RISK_LIMIT)
@@ -462,9 +453,7 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
         reasons.append(RiskReason.PORTFOLIO_RISK_LIMIT)
     if group_room <= 0:
         reasons.append(RiskReason.GROUP_RISK_LIMIT)
-    gross_room = (
-        account.equity * policy.max_gross_notional_multiplier - account.gross_notional
-    )
+    gross_room = account.equity * policy.max_gross_notional_multiplier - account.gross_notional
     directional_room = (
         account.equity * policy.max_directional_notional_multiplier
         - account.directional_notional(side)
@@ -562,9 +551,7 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
     entry_fee = selected.notional * policy.fee_rate
     projected_equity = account.equity - entry_fee
     liquidation_buffer_ratio = (
-        projected_equity
-        - maintenance_after
-        - gross_after * policy.liquidation_fee_rate
+        projected_equity - maintenance_after - gross_after * policy.liquidation_fee_rate
     ) / gross_after
     if liquidation_buffer_ratio + _EPSILON < policy.min_liquidation_buffer:
         return _reject(
@@ -579,11 +566,7 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
     if initial_risk > risk_budget + max(_EPSILON, risk_budget * 1e-9):
         raise RuntimeError("rounded risk quantity exceeded its approved budget")
 
-    action = (
-        RiskApprovedAction.OPEN_LONG
-        if side == "long"
-        else RiskApprovedAction.OPEN_SHORT
-    )
+    action = RiskApprovedAction.OPEN_LONG if side == "long" else RiskApprovedAction.OPEN_SHORT
     reasons_tuple = (RiskReason.APPROVED_ENTRY,)
     decision_id = _decision_id(
         context,

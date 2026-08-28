@@ -99,16 +99,20 @@ def test_risk_decision_round_trip_preserves_storage_metadata() -> None:
         100,
         rules(),
     )
-    decision = evaluate_risk(
-        RiskContext(
-            "risk-primary",
-            strategy_intent,
-            account,
-            market,
-            RiskPolicy(),
-            900_001,
+    decision = (
+        evaluate_risk(
+            RiskContext(
+                "risk-primary",
+                strategy_intent,
+                account,
+                market,
+                RiskPolicy(),
+                900_001,
+            )
         )
-    ).with_sequence(4).with_storage_sequence(5)
+        .with_sequence(4)
+        .with_storage_sequence(5)
+    )
 
     assert RiskDecision.from_dict(decision.to_dict()) == decision
     assert decision.to_dict()["sequence"] == 4
