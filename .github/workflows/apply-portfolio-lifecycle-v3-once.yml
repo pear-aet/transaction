@@ -1,0 +1,112 @@
+name: Apply Portfolio Lifecycle V3 Once
+
+on:
+  push:
+    branches:
+      - portfolio-account-engine-v1
+    paths:
+      - .github/workflows/apply-portfolio-lifecycle-v3-once.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portfolio-lifecycle-convergence
+  cancel-in-progress: false
+
+jobs:
+  converge:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out portfolio branch
+        uses: actions/checkout@v4
+        with:
+          ref: portfolio-account-engine-v1
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and quality tools
+        run: |
+          python -m pip install --quiet --upgrade pip "setuptools>=83"
+          pip install --quiet -e ".[dev]"
+          pip install --quiet pip-audit bandit
+
+      - name: Apply lifecycle code only when absent
+        run: |
+          if grep -q '^def apply_funding_to_position' src/crypto_quant/portfolio_accounting.py; then
+            echo "Portfolio lifecycle code is already present"
+          else
+            test -f scripts/fix_portfolio_lifecycle_patch_indentation.py
+            test -f scripts/patch_portfolio_lifecycle.py
+            test -f scripts/patch_portfolio_lifecycle_failures.py
+            test -f scripts/patch_portfolio_lifecycle_round4.py
+            python scripts/fix_portfolio_lifecycle_patch_indentation.py
+            python scripts/patch_portfolio_lifecycle.py
+            python scripts/patch_portfolio_lifecycle_failures.py
+            python scripts/patch_portfolio_lifecycle_round4.py
+          fi
+
+      - name: Format and lint
+        run: |
+          ruff check --fix src tests
+          ruff format src tests
+          ruff check src tests
+
+      - name: Validate lifecycle and complete project
+        shell: bash
+        run: |
+          set +e
+          {
+            pytest -vv --tb=short \
+              tests/test_portfolio_lifecycle.py::test_partial_close_funding_and_full_close_produce_one_complete_trade_fact \
+              tests/test_portfolio_lifecycle_store.py::test_full_close_and_closed_position_commit_in_one_transaction \
+              tests/test_portfolio_lifecycle_store.py::test_critical_reconciliation_finding_halts_account_without_mutating_history
+            pytest -q tests/test_portfolio_lifecycle.py \
+              tests/test_portfolio_lifecycle_store.py \
+              tests/test_execution_store_scans.py
+            pytest -q
+            pip-audit
+            bandit -r src -x tests -ll
+          } > /tmp/portfolio-lifecycle-v3.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/portfolio-lifecycle-v3.log
+          if [ "$status" -ne 0 ]; then
+            mkdir -p .validation
+            tail -n 240 /tmp/portfolio-lifecycle-v3.log > .validation/portfolio_lifecycle_failure.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .validation/portfolio_lifecycle_failure.txt
+            if git diff --cached --quiet; then
+              exit "$status"
+            fi
+            git commit -m "Record Portfolio lifecycle validation failure"
+            git push origin HEAD:portfolio-account-engine-v1
+            exit "$status"
+          fi
+
+      - name: Remove all lifecycle one-shot files and commit
+        run: |
+          git rm -f --ignore-unmatch \
+            .github/workflows/apply-portfolio-lifecycle-once.yml \
+            .github/workflows/apply-portfolio-lifecycle-v2-once.yml \
+            .github/workflows/apply-portfolio-lifecycle-v3-once.yml \
+            scripts/patch_portfolio_lifecycle.py \
+            scripts/fix_portfolio_lifecycle_patch_indentation.py \
+            scripts/patch_portfolio_lifecycle_failures.py \
+            scripts/patch_portfolio_lifecycle_round3.py \
+            scripts/patch_portfolio_lifecycle_round4.py
+          rm -rf .validation
+          git add -A src tests .github scripts .validation || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Add durable Portfolio lifecycle and reconciliation facts"
+          git push origin HEAD:portfolio-account-engine-v1
