@@ -332,7 +332,7 @@ class EventEngine:
                     mark_price=mark_price,
                     initial_risk=position.initial_risk,
                     maintenance_margin_rate=bracket.maintenance_margin_rate,
-                    correlation_group=key,
+                    correlation_group="default",
                     stop_price=position.stop_price,
                 )
             )
@@ -387,7 +387,7 @@ class EventEngine:
             observed_at=bar.timestamp,
             mark_price=bar.open,
             rules=rules,
-            correlation_group=symbol,
+            correlation_group="default",
         )
 
     def _entry_risk_decision(

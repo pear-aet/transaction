@@ -144,9 +144,37 @@ class RiskEngine:
         if health["critical_subscribers"] == 0:
             raise RiskDeliveryError("risk engine has no critical execution subscriber")
 
-    async def _flush_outbox(self, now_ms: int) -> tuple[int, int]:
-        published = 0
+    async def _expire_stale_outbox(self, now_ms: int) -> int:
+        cursor = 0
         expired = 0
+        while True:
+            pending = await asyncio.to_thread(
+                self.store.pending_decisions,
+                engine_instance_id=self.settings.engine_instance_id,
+                after_sequence=cursor,
+                limit=self.settings.outbox_batch_size,
+            )
+            if not pending:
+                return expired
+            for decision in pending:
+                if decision.storage_sequence is None:
+                    raise RuntimeError("pending risk decision has no storage sequence")
+                cursor = decision.storage_sequence
+                if now_ms > decision.valid_until:
+                    changed = await asyncio.to_thread(
+                        self.store.mark_expired,
+                        decision.decision_id,
+                        now_ms,
+                    )
+                    if changed:
+                        self.health.decisions_expired += 1
+                        expired += 1
+            if len(pending) < self.settings.outbox_batch_size:
+                return expired
+
+    async def _flush_outbox(self, now_ms: int) -> tuple[int, int]:
+        expired = await self._expire_stale_outbox(now_ms)
+        published = 0
         while True:
             pending = await asyncio.to_thread(
                 self.store.pending_decisions,
@@ -156,15 +184,6 @@ class RiskEngine:
             if not pending:
                 return published, expired
             for decision in pending:
-                if now_ms > decision.valid_until:
-                    await asyncio.to_thread(
-                        self.store.mark_expired,
-                        decision.decision_id,
-                        now_ms,
-                    )
-                    self.health.decisions_expired += 1
-                    expired += 1
-                    continue
                 await self._assert_execution_subscriber()
                 result = await self.decision_bus.publish(decision, now_ms=now_ms)
                 if result.decision is None and not result.duplicate:

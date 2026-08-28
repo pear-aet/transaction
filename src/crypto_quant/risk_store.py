@@ -414,15 +414,19 @@ class RiskStore:
         self,
         *,
         engine_instance_id: str | None = None,
+        after_sequence: int = 0,
         limit: int = 1000,
     ) -> list[RiskDecision]:
+        if after_sequence < 0:
+            raise ValueError("after_sequence must be non-negative")
         if not 1 <= limit <= 10_000:
             raise ValueError("decision limit must be in [1, 10000]")
         query = """SELECT * FROM risk_decisions
         WHERE delivery_state='pending'
+        AND storage_sequence>?
         AND (? IS NULL OR engine_instance_id=?)
         ORDER BY storage_sequence LIMIT ?"""
-        parameters = (engine_instance_id, engine_instance_id, limit)
+        parameters = (after_sequence, engine_instance_id, engine_instance_id, limit)
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return [self._stored_from_row(row).decision for row in rows]

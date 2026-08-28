@@ -119,6 +119,31 @@ def validate_risk_decision(context: RiskContext, decision: RiskDecision) -> Risk
         abs_tol=1e-12,
     ):
         mismatches.append("reference_price")
+    if decision.status is RiskDecisionStatus.REJECTED:
+        expected_valid_until = context.evaluated_at
+    elif decision.requested_action is StrategyAction.EXIT:
+        expected_valid_until = context.intent.decision_time + context.policy.max_intent_age_ms
+    else:
+        expected_valid_until = min(
+            context.intent.decision_time + context.policy.max_intent_age_ms,
+            context.account.observed_at + context.policy.max_account_age_ms,
+            context.market.observed_at + context.policy.max_market_age_ms,
+        )
+    if decision.valid_until != expected_valid_until:
+        mismatches.append("valid_until")
+    expected_decision_id = _decision_id(
+        context,
+        status=decision.status,
+        approved_action=decision.approved_action,
+        reasons=decision.reasons,
+        quantity=decision.quantity,
+        notional=decision.notional,
+        leverage=decision.leverage,
+        stop_price=decision.stop_price,
+        valid_until=decision.valid_until,
+    )
+    if decision.decision_id != expected_decision_id:
+        mismatches.append("decision_id")
     if mismatches:
         raise RiskDecisionMismatch("risk decision provenance mismatch: " + ", ".join(mismatches))
     return decision

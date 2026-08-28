@@ -100,9 +100,7 @@ def test_pending_decision_blocks_cursor_from_skipping_later_terminal_rows(tmp_pa
     store.mark_published(pending.decision_id, NOW)
     released = ledger.read_batch("execution-v1")
     assert released.scanned_through == 2
-    assert [item.decision.decision_id for item in released.decisions] == [
-        pending.decision_id
-    ]
+    assert [item.decision.decision_id for item in released.decisions] == [pending.decision_id]
     assert released.skipped == 1
 
     offset = ledger.commit_batch(released, updated_at=NOW + 1)
