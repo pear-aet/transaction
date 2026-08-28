@@ -78,6 +78,14 @@ class OrderUpdateCommit:
     prior_state: OrderState
 
 
+@dataclass(frozen=True, slots=True)
+class StoredOrderUpdate:
+    update: OrderUpdate
+    storage_sequence: int
+    prior_state: OrderState
+    new_state: OrderState
+
+
 class ExecutionStore:
     """Atomic execution plans, current orders and an append-only update journal."""
 
@@ -329,7 +337,9 @@ class ExecutionStore:
             ),
             expired_at=None if row["expired_at"] is None else int(row["expired_at"]),
             failed_at=None if row["failed_at"] is None else int(row["failed_at"]),
-            failure_reason=row["failure_reason"],
+            failure_reason=(
+                None if row["failure_reason"] is None else str(row["failure_reason"])
+            ),
         )
 
     def _load_stored(
@@ -374,8 +384,8 @@ class ExecutionStore:
         *,
         updated_at: int,
     ) -> ExecutionCommit:
-        if updated_at < 0:
-            raise ValueError("updated_at must be non-negative")
+        if updated_at < command.created_at:
+            raise ValueError("execution persistence cannot precede command creation")
         if command.sequence != 0 or command.storage_sequence is not None:
             raise ValueError("only unsequenced, unstored execution commands may be committed")
         expected_state = self._expected_delivery_state(command)
@@ -414,6 +424,8 @@ class ExecutionStore:
             else:
                 instance = self._instance_from_row(instance_row)
                 self._assert_instance(instance, command)
+                if updated_at < instance.updated_at:
+                    raise ExecutionInstanceError("execution instance time cannot move backwards")
                 connection.execute(
                     """UPDATE execution_instances SET updated_at=?
                     WHERE engine_instance_id=?""",
@@ -521,20 +533,11 @@ class ExecutionStore:
         *,
         expected: frozenset[ExecutionDeliveryState],
         target: ExecutionDeliveryState,
-        timestamp_column: str,
         timestamp: int,
         reason: str | None = None,
     ) -> bool:
         if not command_id or timestamp < 0:
             raise ValueError("invalid execution delivery transition")
-        allowed_columns = {
-            "dispatched_at",
-            "completed_at",
-            "expired_at",
-            "failed_at",
-        }
-        if timestamp_column not in allowed_columns:
-            raise ValueError("invalid execution timestamp column")
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -546,6 +549,11 @@ class ExecutionStore:
             stored = self._stored_from_row(connection, row)
             state = stored.delivery_state
             if state is target:
+                if target is ExecutionDeliveryState.FAILED:
+                    if stored.failure_reason != reason:
+                        raise ExecutionCommandConflict(
+                            f"execution failure reason changed: {command_id}"
+                        )
                 return False
             if state not in expected:
                 raise ValueError(
@@ -554,22 +562,35 @@ class ExecutionStore:
             if target is ExecutionDeliveryState.DISPATCHED:
                 if timestamp > stored.command.valid_until:
                     raise ValueError("expired execution command cannot be dispatched")
+            if target is ExecutionDeliveryState.COMPLETED:
+                if stored.dispatched_at is None or timestamp < stored.dispatched_at:
+                    raise ValueError("execution completion cannot precede dispatch")
             if target is ExecutionDeliveryState.EXPIRED:
                 if timestamp <= stored.command.valid_until:
                     raise ValueError("execution command cannot expire before validity ends")
-            if target is ExecutionDeliveryState.FAILED and not reason:
-                raise ValueError("failed execution command requires a reason")
-            assignment = f"delivery_state=?,{timestamp_column}=?"
-            parameters: tuple[object, ...]
             if target is ExecutionDeliveryState.FAILED:
-                assignment += ",failure_reason=?"
-                parameters = (target.value, timestamp, reason, command_id)
+                if not reason:
+                    raise ValueError("failed execution command requires a reason")
+                if stored.dispatched_at is not None and timestamp < stored.dispatched_at:
+                    raise ValueError("execution failure cannot precede dispatch")
+
+            if target is ExecutionDeliveryState.DISPATCHED:
+                query = """UPDATE execution_commands SET
+                    delivery_state='dispatched',dispatched_at=? WHERE command_id=?"""
+                parameters: tuple[object, ...] = (timestamp, command_id)
+            elif target is ExecutionDeliveryState.COMPLETED:
+                query = """UPDATE execution_commands SET
+                    delivery_state='completed',completed_at=? WHERE command_id=?"""
+                parameters = (timestamp, command_id)
+            elif target is ExecutionDeliveryState.EXPIRED:
+                query = """UPDATE execution_commands SET
+                    delivery_state='expired',expired_at=? WHERE command_id=?"""
+                parameters = (timestamp, command_id)
             else:
-                parameters = (target.value, timestamp, command_id)
-            connection.execute(
-                f"UPDATE execution_commands SET {assignment} WHERE command_id=?",
-                parameters,
-            )
+                query = """UPDATE execution_commands SET
+                    delivery_state='failed',failed_at=?,failure_reason=? WHERE command_id=?"""
+                parameters = (timestamp, reason, command_id)
+            connection.execute(query, parameters)
         return True
 
     def mark_dispatched(self, command_id: str, dispatched_at: int) -> bool:
@@ -577,7 +598,6 @@ class ExecutionStore:
             command_id,
             expected=frozenset({ExecutionDeliveryState.PENDING}),
             target=ExecutionDeliveryState.DISPATCHED,
-            timestamp_column="dispatched_at",
             timestamp=dispatched_at,
         )
 
@@ -586,7 +606,6 @@ class ExecutionStore:
             command_id,
             expected=frozenset({ExecutionDeliveryState.DISPATCHED}),
             target=ExecutionDeliveryState.COMPLETED,
-            timestamp_column="completed_at",
             timestamp=completed_at,
         )
 
@@ -595,7 +614,6 @@ class ExecutionStore:
             command_id,
             expected=frozenset({ExecutionDeliveryState.PENDING}),
             target=ExecutionDeliveryState.EXPIRED,
-            timestamp_column="expired_at",
             timestamp=expired_at,
         )
 
@@ -609,7 +627,6 @@ class ExecutionStore:
                 }
             ),
             target=ExecutionDeliveryState.FAILED,
-            timestamp_column="failed_at",
             timestamp=failed_at,
             reason=reason,
         )
@@ -685,7 +702,7 @@ class ExecutionStore:
             storage_sequence = int(cursor.lastrowid)
         return OrderUpdateCommit(updated, False, storage_sequence, current.state)
 
-    def order_updates(self, order_id: str) -> list[OrderUpdateCommit]:
+    def order_updates(self, order_id: str) -> list[StoredOrderUpdate]:
         with self._connect() as connection:
             rows = connection.execute(
                 """SELECT * FROM execution_order_updates
@@ -693,11 +710,11 @@ class ExecutionStore:
                 (order_id,),
             ).fetchall()
         return [
-            OrderUpdateCommit(
-                order=self.load_order(order_id) or self._decode_order("{}"),
-                duplicate=False,
-                update_storage_sequence=int(row["storage_sequence"]),
+            StoredOrderUpdate(
+                update=self._decode_update(str(row["payload"])),
+                storage_sequence=int(row["storage_sequence"]),
                 prior_state=OrderState(row["prior_state"]),
+                new_state=OrderState(row["new_state"]),
             )
             for row in rows
         ]
@@ -708,6 +725,16 @@ class ExecutionStore:
                 "SELECT coalesce(max(storage_sequence),0) FROM execution_commands"
             ).fetchone()
         return int(row[0])
+
+    def oldest_pending_created_at(self) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT payload FROM execution_commands
+                WHERE delivery_state='pending' ORDER BY storage_sequence LIMIT 1"""
+            ).fetchone()
+        if row is None:
+            return None
+        return ExecutionCommand.from_dict(json.loads(str(row["payload"]))).created_at
 
     def metrics(self) -> dict[str, int]:
         with self._connect() as connection:
