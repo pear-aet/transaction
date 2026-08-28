@@ -2,7 +2,7 @@
 
 ## 1. 当前安全边界
 
-当前生产链路实现到：
+当前确定性链路已经实现到本地影子和模拟执行：
 
 ```text
 Data Engine
@@ -15,90 +15,108 @@ StrategyIntent 持久日志
     ↓
 Risk Engine
     ↓
-RiskDecision 持久日志与关键执行队列
+RiskDecision 持久日志
+    ↓
+Execution Engine
+    ↓
+ExecutionCommand / Order / Update 持久日志
+    ↓
+Shadow 或 Local Simulation
 ```
 
-尚未实现：
+当前仍未实现：
 
 ```text
-Execution Engine
-交易所订单状态机
-部分成交与撤单重试
-账户与交易所对账
-真实订单提交、修改和撤销
+真实交易所订单提交
+真实改单与撤单
+交易权限 API Key
+交易所用户数据流
+真实余额与持仓对账
+生产级 Portfolio Engine
+真实资金启用审批
 ```
 
-因此当前系统仍没有真实交易权限。
+因此系统仍然**没有真实交易权限**。Execution Engine 的加入只把风险批准后的影子计划、本地模拟订单状态、恢复和对账做成了正式、可持久化、可测试的层。
 
 ## 2. 总体组件关系
 
 ```text
-Binance REST / WebSocket
+Binance public REST / WebSocket
           │
           ▼
-┌─────────────────────┐
-│     Data Engine     │
-│ 校验、增量同步、补洞 │
-└──────────┬──────────┘
-           │ 已持久化闭合数据
-           ▼
-┌─────────────────────┐
-│    Market Engine    │
-│ 标准事件、排序、去重 │
-│ 背压、统一进程内序号 │
-└──────────┬──────────┘
-           │ MarketEvent
-           ▼
-┌─────────────────────┐
-│   Strategy Runtime  │
-│ 关键BLOCK行情订阅者  │
-└──────────┬──────────┘
-           ▼
-┌─────────────────────┐
-│   Strategy Engine   │
-│ 多周期屏障、时间切片 │
-│ 纯函数评估、恢复控制 │
-└──────────┬──────────┘
-           │ 单事务
-           ▼
-┌─────────────────────┐
-│    StrategyStore    │
-│ 评估、检查点、意图日志│
-└──────────┬──────────┘
-           │ pending outbox
-           ▼
-┌─────────────────────┐
-│ StrategyIntentBus   │
-│ 关键匹配、阻塞式背压 │
-└──────────┬──────────┘
-           │ persisted StrategyIntent
-           ▼
-┌─────────────────────┐
-│     RiskRuntime     │
-│ 实时订阅 + 耐久追赶   │
-└──────────┬──────────┘
-           ▼
-┌─────────────────────┐
-│     Risk Engine     │
-│ 账户/行情快照 + 政策 │
-│ 纯审批、仓位和杠杆   │
-└──────────┬──────────┘
-           │ 单事务
-           ▼
-┌─────────────────────┐
-│      RiskStore      │
-│ 决策、评估、过期状态 │
-└──────────┬──────────┘
-           │ approved pending outbox
-           ▼
-┌─────────────────────┐
-│  RiskDecisionBus    │
-│ 关键执行BLOCK订阅者  │
-└──────────┬──────────┘
-           │ approved RiskDecision
-           ▼
-    Future Execution Engine
+┌────────────────────────┐
+│      Data Engine       │
+│ 校验、增量同步、缺口修复 │
+└────────────┬───────────┘
+             │ 已持久化市场事实
+             ▼
+┌────────────────────────┐
+│      Market Engine     │
+│ 标准事件、排序、去重、背压│
+└────────────┬───────────┘
+             │ MarketEvent
+             ▼
+┌────────────────────────┐
+│    Strategy Runtime    │
+│ 关键订阅、耐久恢复、周期屏障│
+└────────────┬───────────┘
+             ▼
+┌────────────────────────┐
+│    Strategy Engine     │
+│ 纯评估、时间切片、确定意图 │
+└────────────┬───────────┘
+             │ 单事务
+             ▼
+┌────────────────────────┐
+│     StrategyStore      │
+│ 评估、检查点、意图 outbox │
+└────────────┬───────────┘
+             │ persisted StrategyIntent
+             ▼
+┌────────────────────────┐
+│      Risk Runtime      │
+│ 关键订阅 + 耐久追赶      │
+└────────────┬───────────┘
+             ▼
+┌────────────────────────┐
+│       Risk Engine      │
+│ 账户/行情快照、风险和杠杆 │
+└────────────┬───────────┘
+             │ 单事务
+             ▼
+┌────────────────────────┐
+│       RiskStore        │
+│ 决策、评估、批准 outbox   │
+└────────────┬───────────┘
+             │ approved RiskDecision
+             ▼
+┌────────────────────────┐
+│   Execution Runtime    │
+│ 关键订阅、耐久追赶、恢复   │
+└────────────┬───────────┘
+             ▼
+┌────────────────────────┐
+│    Execution Engine    │
+│ 来源复核、行情复核、规划   │
+└────────────┬───────────┘
+             │ 单事务
+             ▼
+┌────────────────────────┐
+│     ExecutionStore     │
+│ 命令、订单、outbox、更新日志│
+└────────────┬───────────┘
+             │
+      ┌──────┴────────┐
+      ▼               ▼
+ Shadow Record   Local SimulatedBroker
+ 无 broker 能力   无网络写入、确定性状态更新
 ```
+
+三条硬边界：
+
+1. Strategy Engine 不决定数量、杠杆、保证金或订单类型；
+2. Risk Engine 不提交订单；
+3. Execution Engine 当前不包含任何真实交易所写能力。
 
 ## 3. Data Engine
 
@@ -106,17 +124,19 @@ Data Engine 是市场事实的唯一写入口，负责：
 
 - 合约K线、标记价格K线和资金费率；
 - 过滤未闭合K线；
-- OHLCV合法性、时间顺序、重复与缺口校验；
+- OHLCV合法性、时间顺序、重复和缺口校验；
 - 历史增量同步；
 - WebSocket断线重连；
-- 实时K线出现缺口时先REST补洞，再保存当前K线；
-- 已闭合K线与资金费率的不可变写入。
+- 实时K线出现缺口时先用REST补齐，再保存当前K线；
+- 已闭合K线和资金费率的不可变写入。
 
-策略和风险模块不得自行请求交易所行情或维护另一套K线定义。
+策略、风险和执行模块不得私自维护另一套历史K线定义。
+
+详见 [Data Engine](DATA_ENGINE.md)。
 
 ## 4. Market Engine
 
-Market Engine 把已验证数据转换为统一事件：
+Market Engine 把已验证市场事实转换为统一事件：
 
 ```text
 candle_closed
@@ -124,15 +144,29 @@ mark_price
 funding_rate
 ```
 
-每条事件有确定性ID、逻辑事件时间、来源时间、接收时间、分区、版本化载荷和进程内序号。
+每条事件包含：
 
-同一收盘时点，高周期K线优先于低周期K线排序。关键消费者使用 `BLOCK`；只有可替代展示数据才能使用丢旧或断开策略。
+- 确定性事件ID；
+- 逻辑事件时间；
+- 交易所来源时间；
+- 接收时间；
+- 币种和周期分区；
+- 进程内全局序号；
+- 严格版本化载荷。
+
+同一收盘时点，高周期K线优先于低周期K线排序。关键消费者使用 `BLOCK`；只有可替代展示数据才能显式丢旧或断开。
 
 详见 [Market Engine](MARKET_ENGINE.md)。
 
 ## 5. Strategy Engine
 
-Strategy Engine 只消费已持久化的合约闭合K线事件。每个实例固定绑定策略ID、代码版本、参数指纹和高低周期。
+Strategy Engine 只消费已持久化的合约闭合K线事件。每个实例固定绑定：
+
+- 策略ID；
+- 代码版本；
+- 参数指纹；
+- 高周期；
+- 低周期。
 
 核心入口：
 
@@ -140,9 +174,14 @@ Strategy Engine 只消费已持久化的合约闭合K线事件。每个实例固
 evaluate_strategy(StrategyContext) -> StrategyDecision
 ```
 
-### 5.1 多周期屏障
+### 5.1 多周期闭合屏障
 
-1小时/15分钟配置下，整点15分钟收盘必须等待同一整点的1小时收盘；高周期缺失时低周期事件进入有上限的待决队列，不能使用旧趋势将就运行。
+在1小时/15分钟配置下：
+
+- 普通15分钟收盘使用最近已闭合1小时K线；
+- 整点15分钟收盘必须等待同一整点1小时K线；
+- 高周期缺失时低周期事件进入有上限待决队列；
+- 超过上限直接失败，不使用陈旧趋势继续产生入场意图。
 
 ### 5.2 时间边界
 
@@ -179,18 +218,20 @@ StrategyIntent 只表达：
 它不表达：
 
 ```text
-数量
+下单数量
 杠杆
 保证金
 订单类型
 成交状态
 ```
 
-每条意图有永久 `storage_sequence`。历史补算意图标记为 `suppressed`，默认风险消费者只能耐久读取 `published` 意图。
+每条意图有永久 `storage_sequence`。历史恢复产生的意图标记为 `suppressed`，默认风险消费者只读取 `published` 意图。
+
+StrategyIntent 的 `pending` 状态是耐久消费者硬屏障：不能因为它暂时不匹配终态过滤器就跳到后续记录。
 
 ## 7. Risk Engine
 
-Risk Engine 是策略意图与执行层之间的唯一审批边界。
+Risk Engine 是策略意图与执行计划之间的唯一风险审批边界。
 
 核心入口：
 
@@ -202,7 +243,7 @@ evaluate_risk(RiskContext) -> RiskDecision
 
 - 已持久化 StrategyIntent；
 - 不可变账户风险快照；
-- 标记价格与交易规则快照；
+- 标记价格和交易规则快照；
 - 版本化 RiskPolicy。
 
 ### 7.1 风险维度
@@ -222,122 +263,324 @@ evaluate_risk(RiskContext) -> RiskDecision
 - 动态杠杆；
 - 全仓强平缓冲；
 - 日亏、回撤和连续亏损；
-- 信号、账户与行情快照年龄；
+- 意图、账户和行情快照年龄；
 - 参考价偏离。
 
 ### 7.2 决策有效期
 
-每个批准决策都有确定性 `valid_until`。有效期由策略意图、账户快照和行情快照三者中最早失效者决定。
+每个批准决策都有确定性 `valid_until`。有效期由策略意图、账户快照和行情快照中最早失效者决定。
 
 过期决策不能发布、恢复或重新进入待处理状态。
 
 ### 7.3 风险降低型退出
 
-退出使用完整现有数量并强制 `reduce_only=true`。账户熔断和陈旧账户/行情快照不能阻止减仓，但陈旧或未来策略意图仍然拒绝。
+退出使用批准的完整数量并强制 `reduce_only=true`。账户熔断和陈旧账户/行情快照不能阻止减仓，但陈旧或未来策略意图仍然拒绝。
 
-### 7.4 原子持久化
+### 7.4 原子持久化和 outbox
 
 RiskStore 在一个事务中写入：
 
 ```text
 risk_instances
-risk_decisions
 risk_evaluations
+risk_decisions
 ```
 
-批准项进入：
+批准决策初始进入 `pending` outbox；拒绝决策作为 `recorded` 审计事实。批准状态只允许：
 
 ```text
 pending -> published
 pending -> expired
 ```
 
-拒绝项永久为：
-
-```text
-recorded
-```
-
-同一风险实例与同一策略意图只能有一个不可变决策。账户或政策身份改变必须使用新实例ID。
+Risk Engine 在向关键执行队列成功发布后才标记 `published`。
 
 详见 [Risk Engine](RISK_ENGINE.md)。
 
-## 8. 风险投递与耐久恢复
+## 8. RiskDecision
 
-RiskDecisionBus 只接受已经持久化、批准、未过期且未携带进程内序号的决策。
-
-关键执行消费者必须使用：
+RiskDecision 表达：
 
 ```text
-critical = true
-backpressure = BLOCK
+批准或拒绝
+批准动作
+数量和名义价值
+杠杆和保证金
+止损
+reduce_only
+风险预算与审批后敞口
+账户、行情、策略和政策来源
+valid_until
 ```
 
-没有匹配的关键消费者时，批准决策保持 `pending` 并抛出可见故障。
+Execution Engine 不能修改这些风险边界。它只能在执行行情和执行策略允许范围内生成具体本地计划。
 
-Risk Engine 启动时：
+每条决策有永久 `storage_sequence`。默认执行消费者只耐久读取 `PUBLISHED + APPROVED` 决策。
 
-1. 验证关键执行消费者；
-2. 重试仍有效的 pending 决策；
-3. 把过期 pending 决策改为 expired；
-4. 订阅实时 StrategyIntentBus；
-5. 通过 StrategyReplayLedger 追赶未处理意图；
-6. 进入实时循环。
+## 9. Execution Engine
 
-下游 `RiskReplayLedger` 默认只向未来 Execution Engine 暴露 `published` 决策，拒绝和过期记录必须通过显式审计过滤器读取。
+Execution Engine 是风险批准与本地订单状态之间的唯一规划边界。
 
-## 9. 研究与模拟账户 EventEngine
+核心入口：
 
-`engine.py` 中的 EventEngine 仍负责回测和模拟账户状态，但不再维护第二套入场风险公式。
+```python
+build_execution_command(ExecutionContext) -> ExecutionCommand
+```
 
-有效旧信号会被转换为确定性 StrategyIntent，随后构造账户与市场快照并调用同一个 `evaluate_risk()`。EventEngine 只执行 RiskDecision 中的：
+ExecutionContext 包含：
 
-- 数量；
-- 审批价格；
-- 止损；
-- 初始风险；
-- 批准杠杆。
+- 已持久化 RiskDecision；
+- ExecutionMarketSnapshot；
+- 版本化 ExecutionPolicy；
+- 执行实例 ID；
+- 评估时间。
 
-不合法旧信号在 StrategyIntent 契约处失败关闭。风险计算器异常不会被误报为策略信号错误。
+### 9.1 来源复核
 
-回测的下一根开盘执行、标记价格强平、止损优先、资金费率和组合共享现金语义保持不变。
+在规划和分发前复核：
 
-## 10. 交付语义
+- RiskStore 中是否存在相同 storage_sequence；
+- 完整 RiskDecision 语义是否一致；
+- 账户、币种、状态和批准动作是否匹配；
+- 数量、价格、止损、杠杆、保证金和 reduce-only 是否一致；
+- 执行有效期是否未超过风险有效期。
 
-当前实现的保证：
+传入对象即使形式合法，只要不同于 RiskStore 不可变事实，也会失败关闭。
+
+### 9.2 执行行情复核
+
+规划检查：
+
+- 未来行情；
+- 陈旧行情；
+- 买卖价差；
+- 风险审批价偏离；
+- bid/ask/mark 的方向性使用。
+
+执行行情只用于判断当前本地计划是否仍然可接受，不能扩大 RiskDecision 批准的数量或风险。
+
+### 9.3 命令和订单腿
+
+入场命令包含：
+
+```text
+1 个主订单
+1 个绑定主订单的 reduce-only 保护性止损
+```
+
+退出命令只包含一个 reduce-only 主订单。
+
+命令 ID、订单 ID、客户端订单 ID 和模拟 broker ID 都是确定性的。
+
+详见 [Execution Engine](EXECUTION_ENGINE.md)。
+
+## 10. ExecutionStore
+
+ExecutionStore 使用 SQLite WAL 保存：
+
+```text
+execution_instances
+execution_commands
+execution_orders
+execution_order_updates
+```
+
+### 10.1 原子规划
+
+执行实例、命令和全部初始订单腿在同一个事务中写入。任何 broker 操作都发生在持久化之后。
+
+### 10.2 命令状态
+
+```text
+recorded      shadow 记录
+pending       simulation 待本地分发
+dispatched    本地 broker 已接收
+completed     本地订单生命周期完成
+expired       分发前超过有效期
+failed        broker、保护腿或对账失败
+```
+
+### 10.3 订单更新
+
+每条 OrderUpdate 先追加不可变日志，再更新当前订单快照。更新 ID 重复时必须保持完全相同语义。
+
+## 11. Shadow 模式
+
+Shadow 模式：
+
+- 没有 broker；
+- 命令持久化为 `recorded`；
+- 不进入分发 outbox；
+- 不产生 broker order ID 或成交；
+- 只展示经过 Risk Engine 批准并已持久化的 ExecutionCommand。
+
+旧 CLI 中的原始 Strategy Signal 只作为未风控意图展示：
+
+```text
+risk_approved=false
+executable=false
+orders=[]
+```
+
+它不能被误认为正式订单。
+
+## 12. Simulation 模式
+
+SimulatedBroker 是确定性的进程内适配器：
+
+- 不连接交易所；
+- 不读取交易密钥；
+- 不包含网络写函数；
+- 只接受已持久化的 simulation 命令；
+- 显式产生分发、确认、部分成交、完全成交、拒绝和取消更新；
+- 主订单部分或完全成交后激活保护腿；
+- 所有对象强制 `submitted=false` 和 `network_write=false`。
+
+模拟 broker 不会自动假设所有订单立刻成交。成交必须由测试、研究驱动器或未来独立撮合模型显式输入。
+
+## 13. Execution Runtime
+
+Execution Runtime：
+
+1. 先订阅 RiskDecisionBus 关键 `BLOCK` 队列；
+2. 恢复 ExecutionStore pending outbox；
+3. 从 RiskReplayLedger 做单条耐久追赶；
+4. 进入实时消费；
+5. 周期冲刷 outbox 和上游追赶。
+
+上游游标只在 ExecutionCommand 持久化后前进。即使本地 broker 随后失败，命令仍可从执行 outbox 恢复，无需重新规划和重新取行情。
+
+多个 outbox 冲刷调用由同一异步锁串行化，避免重复模拟分发。
+
+## 14. 上游发布竞态
+
+Risk Engine 的顺序是：
+
+```text
+持久化批准决策
+    ↓
+发布到关键队列
+    ↓
+RiskStore 标记 published
+```
+
+Execution Runtime 可能在最后一步前收到对象，因此：
+
+- 可以先持久化命令；
+- RiskStore 源状态仍为 pending 时禁止 broker 分发；
+- published 后周期恢复自动继续；
+- expired 时执行命令也过期；
+- 不会利用实时队列先到绕过耐久发布事实。
+
+## 15. 订单状态机与保护腿
+
+订单状态只允许显式单调转换：
+
+```text
+planned -> dispatched -> acknowledged
+acknowledged -> partially_filled -> filled
+acknowledged/partially_filled -> cancel_pending -> canceled
+活动态 -> rejected / expired / failed
+```
+
+终态不能恢复。累计成交、金额和费用不能倒退。broker order ID 一旦建立不能替换。
+
+保护腿被拒绝、过期、失败，或在存在主订单成交时被取消，执行命令进入 failed。
+
+## 16. 对账
+
+对账函数接收某个命令的完整 broker 账本快照，按确定性客户端订单 ID 比较。
+
+明确失败包括：
+
+- 本地活动订单在完整账本缺失；
+- broker 出现本地未知订单；
+- planned 订单被 broker 提前激活；
+- broker order ID 改变；
+- 状态或成交数据倒退；
+- 非法终态变化。
+
+合法向前变化转换为确定性 OrderUpdate。结构性差异会把命令标记为 failed 并抛出可审计错误，不会隐式创建、改单或撤单。
+
+当前只对本地模拟 broker 账本进行对账。真实交易所只读账本适配器仍未实现。
+
+## 17. 研究与模拟账户 EventEngine
+
+`engine.py` 中的 EventEngine 是历史回测和模拟账户模型，不是 Market Engine、Risk Runtime 或 Execution Runtime。
+
+它仍处理：
+
+- 历史K线驱动；
+- 手续费、滑点和资金费率；
+- 全仓账户权益；
+- 保守强平、止损和止盈顺序；
+- 多币种共享资金。
+
+EventEngine 的入场仓位计算已经路由到与 Risk Engine 相同的纯风险函数，但它的K线撮合模型仍是研究模拟，不等于 Execution Runtime 的订单状态日志。
+
+## 18. 交付语义
+
+当前实现保证：
 
 ```text
 市场事实：不可变
-市场事件：进程内有序、明确背压
-策略评估与意图：单事务 + 确定性ID
-策略意图耐久重放：永久序号 + 过滤器锁定游标
-风险评估与决策：单事务 + 确定性ID
-批准决策outbox：持久化后投递 + 有效期
-风险决策耐久重放：永久序号 + 过滤器锁定游标
+市场事件：持久化后发布
+策略评估/意图/检查点：单事务
+策略意图 outbox：至少一次 + 幂等
+风险评估/决策：单事务
+风险批准 outbox：至少一次 + 有效期
+执行命令/初始订单：单事务
+执行命令 outbox：持久化后本地分发
+订单更新：追加日志 + 当前快照单事务
+耐久消费者：永久序号 + 固定过滤器 + pending 硬屏障
 ```
 
-系统不声称跨所有进程、数据库和未来交易所API实现 exactly-once。每一层通过确定性ID、永久序号和消费者幂等实现至少一次边界。
+系统不声称跨所有进程、数据库和未来交易所 API 实现 exactly-once。每层通过确定性 ID、永久序号、幂等写入和对账缩小重复与丢失边界。
 
-## 11. 故障原则
+## 19. 故障原则
 
-以下情况一律失败关闭：
+以下情况失败关闭：
 
 - 市场数据缺口或历史修订；
-- 市场、策略或风险分区时间倒退；
-- 策略上下文包含未来或不连续K线；
-- 高周期收盘缺失；
-- 策略或风险实例版本、参数、账户或政策漂移；
-- 同一输入重算出不同决策；
-- 策略意图或风险决策没有匹配关键消费者；
-- 风险意图、账户或行情快照陈旧；
-- 交易所风险档位不连续；
-- 风险、名义价值、保证金或强平缓冲不足；
-- 耐久游标过滤器改变、批次陈旧或越界。
+- 事件、策略、风险或执行时间倒退；
+- 策略上下文含未来数据；
+- 高周期屏障无法满足；
+- 策略、风险或执行实例身份改变；
+- 同一来源事实重算出不同语义；
+- 关键消费者缺失；
+- RiskDecision 与 RiskStore 不一致；
+- 执行行情陈旧、未来或偏离过大；
+- 风险源尚未 published；
+- 订单状态或累计成交倒退；
+- 保护腿失效；
+- 对账出现缺单、陌生单或身份冲突。
 
-失败后不得继续批准新的入场。
+失败后不能通过手工改库继续同一实例。
 
-## 12. 真实交易限制
+## 20. 真实交易限制
 
-`shadow.py` 仍只能生成 `submitted=false` 的订单意图，代码中不存在真实交易所提交函数。
+本仓库当前不存在：
 
-真实交易必须等待 Execution Engine、订单状态机、部分成交处理、撤单重试、账户对账和生产熔断编排完成，并作为独立安全评审项目处理。
+```text
+真实订单提交函数
+真实改单函数
+真实撤单函数
+交易权限密钥读取路径
+签名交易请求
+真实交易所用户数据流
+```
+
+真实交易必须等待：
+
+- 独立 Portfolio Engine；
+- 最小权限密钥管理；
+- 真实交易所只读和写适配器；
+- 速率限制、签名、时间同步和幂等重试；
+- 用户数据流与REST双通道对账；
+- 未知订单隔离；
+- 余额和持仓对账；
+- 人工批准与紧急停止；
+- 长时间影子验证；
+- 独立安全评审。
+
+运行和恢复细节见 [Execution Engine 运行与恢复](EXECUTION_ENGINE_OPERATIONS.md)。
