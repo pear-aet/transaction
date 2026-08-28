@@ -1,0 +1,38 @@
+name: Harden Execution Contracts Once
+
+on:
+  push:
+    branches:
+      - execution-engine-v1
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out execution branch
+        uses: actions/checkout@v4
+        with:
+          ref: execution-engine-v1
+          fetch-depth: 0
+
+      - name: Harden execution contracts
+        run: python scripts/harden_execution_contracts.py
+
+      - name: Format and lint
+        run: |
+          python -m pip install "ruff>=0.12,<1"
+          ruff format src tests
+          ruff check src tests
+
+      - name: Remove one-shot hardening files and commit
+        run: |
+          git rm .github/workflows/harden-execution-contracts-once.yml
+          git rm scripts/harden_execution_contracts.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src tests
+          git commit -m "Harden Execution Engine contracts"
+          git push origin HEAD:execution-engine-v1
