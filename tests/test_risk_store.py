@@ -20,7 +20,7 @@ from crypto_quant.risk_store import (
 from crypto_quant.strategy_contracts import StrategyAction, StrategyIntent
 
 SYMBOL = "BTC/USDT:USDT"
-NOW = 900_001
+NOW = 1_000_000
 
 
 def rules() -> MarketRules:
