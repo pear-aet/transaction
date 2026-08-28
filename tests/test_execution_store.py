@@ -323,3 +323,69 @@ def test_order_updates_are_append_only_monotonic_and_idempotent(tmp_path) -> Non
         OrderState.ACKNOWLEDGED,
     ]
     assert store.metrics()["order_updates"] == 3
+
+
+def test_failed_primary_cannot_bypass_entry_completion_invariant(tmp_path) -> None:
+    store = ExecutionStore(tmp_path / "quant.db")
+    value = command(policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION))
+    stored = store.commit_command(value, updated_at=NOW).stored_command
+    broker = SimulatedBroker()
+    for update in broker.dispatch(stored.command, stored.orders, NOW + 1):
+        store.apply_order_update(update)
+    store.mark_dispatched(value.command_id, NOW + 1)
+
+    current = store.load_command(value.command_id)
+    assert current is not None
+    primary = current.orders[0]
+    quantity = primary.quantity / 2
+    store.apply_order_update(
+        broker.fill(
+            primary,
+            fill_quantity=quantity,
+            fill_price=100.1,
+            fee=0.1,
+            event_time=NOW + 2,
+        )
+    )
+    current = store.load_command(value.command_id)
+    assert current is not None
+    for update in broker.activate_protection(current.command, current.orders, NOW + 2):
+        store.apply_order_update(update)
+    current = store.load_command(value.command_id)
+    assert current is not None
+    primary = current.orders[0]
+    protective = current.orders[1]
+    store.apply_order_update(
+        broker.fill(
+            protective,
+            fill_quantity=quantity,
+            fill_price=99,
+            fee=0.1,
+            event_time=NOW + 3,
+        )
+    )
+    store.apply_order_update(
+        OrderUpdate(
+            "primary-failed-after-partial",
+            primary.order_id,
+            NOW + 4,
+            OrderState.FAILED,
+            quantity,
+            quantity * 100.1,
+            0.1,
+            average_fill_price=100.1,
+            broker_order_id=primary.broker_order_id,
+            evidence={"source": "failure_test"},
+        )
+    )
+    protective = store.load_order(protective.order_id)
+    assert protective is not None
+    for update in broker.cancel(
+        protective,
+        event_time=NOW + 4,
+        reason="flat_after_primary_failure",
+    ):
+        store.apply_order_update(update)
+
+    with pytest.raises(ValueError, match="filled or OCO-canceled"):
+        store.mark_completed(value.command_id, NOW + 5)

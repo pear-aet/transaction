@@ -635,8 +635,17 @@ class ExecutionStore:
                     if len(protective) != 1:
                         raise ValueError("entry completion requires one protective order")
                     protective_order = protective[0]
-                    if not primary_order.terminal or primary_order.cumulative_filled_quantity <= 0:
-                        raise ValueError("entry completion requires terminal filled exposure")
+                    if (
+                        primary_order.state
+                        not in {
+                            OrderState.FILLED,
+                            OrderState.CANCELED,
+                        }
+                        or primary_order.cumulative_filled_quantity <= 0
+                    ):
+                        raise ValueError(
+                            "entry completion requires filled or OCO-canceled exposure"
+                        )
                     if protective_order.state not in {
                         OrderState.FILLED,
                         OrderState.CANCELED,

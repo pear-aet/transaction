@@ -464,8 +464,11 @@ def test_partial_fill_activates_protection_and_protective_rejection_fails_comman
         reason="protection_rejected",
     )
     stored = asyncio.run(engine.record_order_update(rejected))
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
     assert stored.delivery_state is ExecutionDeliveryState.FAILED
     assert stored.failure_reason == "protective_rejected"
+    assert primary.state is OrderState.CANCELED
+    assert primary.cumulative_filled_quantity == pytest.approx(primary.quantity / 2)
 
 
 def test_entry_command_completes_only_after_protective_fill_closes_exposure(tmp_path) -> None:
@@ -708,3 +711,46 @@ def test_partial_exit_cancellation_fails_instead_of_remaining_dispatched(tmp_pat
 
     assert stored.delivery_state is ExecutionDeliveryState.FAILED
     assert stored.failure_reason == "primary_canceled_incomplete"
+
+
+def test_unexpected_protective_cancel_cancels_primary_remainder_before_failure(
+    tmp_path,
+) -> None:
+    risk_store = RiskStore(tmp_path / "risk.db")
+    decision = persist_risk_decision(risk_store, published=True)
+    broker = SimulatedBroker()
+    engine, _, execution_store = make_engine(
+        tmp_path,
+        risk_store,
+        policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+        broker=broker,
+    )
+    planned = asyncio.run(engine.plan_decision(decision, now_ms=NOW + 2))
+    stored = execution_store.load_command(planned.command.command_id)
+    assert stored is not None
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    stored = asyncio.run(
+        engine.record_order_update(
+            broker.fill(
+                primary,
+                fill_quantity=primary.quantity / 2,
+                fill_price=100.1,
+                fee=0.1,
+                event_time=NOW + 3,
+            )
+        )
+    )
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    for update in broker.cancel(
+        protective,
+        event_time=NOW + 4,
+        reason="unexpected_protection_cancel",
+    ):
+        stored = asyncio.run(engine.record_order_update(update))
+
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    assert stored.delivery_state is ExecutionDeliveryState.FAILED
+    assert stored.failure_reason == "protective_canceled_with_open_fill"
+    assert primary.state is OrderState.CANCELED

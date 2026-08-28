@@ -241,7 +241,13 @@ class ExecutionEngine:
             raise RuntimeError("entry command has invalid OCO order topology")
         primary_order = primary[0]
         protective_order = protective[0]
-        if protective_order.cumulative_filled_quantity <= 0:
+        protective_terminal_problem = protective_order.state in {
+            OrderState.CANCELED,
+            OrderState.REJECTED,
+            OrderState.EXPIRED,
+            OrderState.FAILED,
+        }
+        if protective_order.cumulative_filled_quantity <= 0 and not protective_terminal_problem:
             return stored
 
         if not primary_order.terminal and primary_order.remaining_quantity > 1e-12:
@@ -334,13 +340,13 @@ class ExecutionEngine:
             if open_quantity < -1e-12:
                 raise RuntimeError("persisted protection exceeds primary exposure")
             open_quantity = max(0.0, open_quantity)
-            if (
+            if protective_order.state in failed_states:
+                failure_reason = f"protective_{protective_order.state.value}"
+            elif (
                 primary_order.cumulative_filled_quantity <= 1e-12
                 and primary_order.state in failed_states | {OrderState.CANCELED}
             ):
                 failure_reason = f"primary_{primary_order.state.value}_without_fill"
-            elif protective_order.state in failed_states:
-                failure_reason = f"protective_{protective_order.state.value}"
             elif protective_order.state is OrderState.CANCELED and open_quantity > 1e-12:
                 failure_reason = "protective_canceled_with_open_fill"
             elif (
@@ -748,9 +754,15 @@ class ExecutionEngine:
                             raise RuntimeError(
                                 "execution command disappeared after protection activation"
                             )
-                if (
-                    commit.order.leg_type is OrderLegType.PROTECTIVE_STOP
-                    and commit.order.cumulative_filled_quantity > 0
+                if commit.order.leg_type is OrderLegType.PROTECTIVE_STOP and (
+                    commit.order.cumulative_filled_quantity > 0
+                    or commit.order.state
+                    in {
+                        OrderState.CANCELED,
+                        OrderState.REJECTED,
+                        OrderState.EXPIRED,
+                        OrderState.FAILED,
+                    }
                 ):
                     stored = await self._enforce_entry_oco(stored, update.event_time)
                 await self._reconcile_command(stored, update.event_time)
