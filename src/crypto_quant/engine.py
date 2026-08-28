@@ -10,7 +10,7 @@ from typing import Any
 from .config import StrategyConfig
 from .data import timeframe_ms
 from .domain import Candle, FundingRate, MarketRules, RiskBracket, Signal, finite_json
-from .risk import evaluate_risk
+from .risk import evaluate_risk, validate_risk_decision
 from .risk_contracts import (
     AccountRiskSnapshot,
     MarketRiskSnapshot,
@@ -396,16 +396,16 @@ class EventEngine:
         intent: StrategyIntent,
         bar: Candle,
     ) -> RiskDecision:
-        return self.risk_evaluator(
-            RiskContext(
-                "event-engine-risk-v1",
-                intent,
-                self._entry_account_snapshot(symbol, bar),
-                self._entry_market_snapshot(symbol, bar),
-                RiskPolicy.from_strategy_config(self.config),
-                bar.timestamp,
-            )
+        context = RiskContext(
+            "event-engine-risk-v1",
+            intent,
+            self._entry_account_snapshot(symbol, bar),
+            self._entry_market_snapshot(symbol, bar),
+            RiskPolicy.from_strategy_config(self.config),
+            bar.timestamp,
         )
+        decision = self.risk_evaluator(context)
+        return validate_risk_decision(context, decision)
 
     def _open(self, symbol: str, signal: Signal, bar: Candle) -> None:
         try:

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .risk import evaluate_risk
+from .risk import evaluate_risk, validate_risk_decision
 from .risk_bus import RiskDecisionBus
 from .risk_contracts import (
     AccountRiskSnapshot,
@@ -187,8 +187,8 @@ class RiskEngine:
             raise ValueError("now_ms must be non-negative")
         async with self._processing_lock:
             try:
-                await self._assert_execution_subscriber()
                 published, expired = await self._flush_outbox(current)
+                await self._assert_execution_subscriber()
                 self.health.outbox_recoveries += published
                 metrics = await asyncio.to_thread(self.store.metrics)
                 self.health.bootstrapped = True
@@ -265,6 +265,7 @@ class RiskEngine:
                     current,
                 )
                 decision = await asyncio.to_thread(self.evaluator, context)
+                validate_risk_decision(context, decision)
                 self.health.evaluations += 1
                 commit = await asyncio.to_thread(
                     self.store.commit_evaluation,

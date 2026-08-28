@@ -86,6 +86,44 @@ def _validate_rules(rules: MarketRules) -> bool:
     return True
 
 
+class RiskDecisionMismatch(RuntimeError):
+    """Raised when an evaluator returns a decision for another input context."""
+
+
+def validate_risk_decision(context: RiskContext, decision: RiskDecision) -> RiskDecision:
+    expected_policy_hash = risk_policy_hash(context.policy)
+    checks = (
+        ("engine_instance_id", decision.engine_instance_id, context.engine_instance_id),
+        ("policy_id", decision.policy_id, context.policy.policy_id),
+        ("policy_version", decision.policy_version, context.policy.version),
+        ("policy_hash", decision.policy_hash, expected_policy_hash),
+        ("account_id", decision.account_id, context.account.account_id),
+        ("account_snapshot_id", decision.account_snapshot_id, context.account.snapshot_id),
+        ("market_snapshot_id", decision.market_snapshot_id, context.market.snapshot_id),
+        ("intent_id", decision.intent_id, context.intent.intent_id),
+        (
+            "intent_storage_sequence",
+            decision.intent_storage_sequence,
+            context.intent.storage_sequence,
+        ),
+        ("symbol", decision.symbol, context.intent.symbol),
+        ("requested_action", decision.requested_action, context.intent.action),
+        ("decision_time", decision.decision_time, context.intent.decision_time),
+        ("evaluated_at", decision.evaluated_at, context.evaluated_at),
+    )
+    mismatches = [name for name, actual, expected in checks if actual != expected]
+    if not math.isclose(
+        decision.reference_price,
+        context.intent.reference_price,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    ):
+        mismatches.append("reference_price")
+    if mismatches:
+        raise RiskDecisionMismatch("risk decision provenance mismatch: " + ", ".join(mismatches))
+    return decision
+
+
 def _decision_id(
     context: RiskContext,
     *,

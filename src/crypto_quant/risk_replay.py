@@ -24,6 +24,8 @@ class DurableRiskFilter:
     def __post_init__(self) -> None:
         if not self.delivery_states:
             raise ValueError("durable risk filter requires at least one delivery state")
+        if RiskDeliveryState.PENDING in self.delivery_states:
+            raise ValueError("durable risk replay cannot include mutable pending state")
 
     def matches(self, value: StoredRiskDecision) -> bool:
         return value.delivery_state in self.delivery_states and self.decision_filter.matches(
@@ -161,20 +163,28 @@ class RiskReplayLedger:
             through_sequence=high_watermark,
             limit=limit,
         )
-        scanned_through = (
-            offset.sequence
-            if not rows
-            else int(rows[-1].decision.storage_sequence or offset.sequence)
-        )
-        matched = tuple(item for item in rows if selected_filter.matches(item))
+        scanned_through = offset.sequence
+        matched = []
+        skipped = 0
+        for item in rows:
+            if item.delivery_state is RiskDeliveryState.PENDING:
+                break
+            storage_sequence = item.decision.storage_sequence
+            if storage_sequence is None:
+                raise RuntimeError("stored risk decision has no storage sequence")
+            scanned_through = int(storage_sequence)
+            if selected_filter.matches(item):
+                matched.append(item)
+            else:
+                skipped += 1
         return RiskReplayBatch(
             consumer,
             offset.filter_hash,
             offset.sequence,
             high_watermark,
             scanned_through,
-            matched,
-            len(rows) - len(matched),
+            tuple(matched),
+            skipped,
         )
 
     def commit_batch(

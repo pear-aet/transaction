@@ -529,6 +529,14 @@ class RiskDecision:
         if min(nonnegative) < 0:
             raise ValueError("risk decision amounts must be non-negative")
         if self.status is RiskDecisionStatus.APPROVED:
+            expected_notional = self.quantity * self.approval_price
+            if not math.isclose(
+                self.notional,
+                expected_notional,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("approved notional must equal quantity times approval price")
             if self.approved_action is None or self.quantity <= 0 or self.notional <= 0:
                 raise ValueError("approved risk decision requires an executable plan")
             if self.leverage < 1:
@@ -544,19 +552,46 @@ class RiskDecision:
                 }.get(self.requested_action)
                 if expected is not self.approved_action:
                     raise ValueError("approved entry action does not match the strategy request")
-                if RiskReason.APPROVED_ENTRY not in self.reasons:
-                    raise ValueError("approved entry requires the approved_entry reason")
+                if self.reasons != (RiskReason.APPROVED_ENTRY,):
+                    raise ValueError("approved entry requires only the approved_entry reason")
                 if self.reduce_only or self.required_margin <= 0 or self.stop_price is None:
                     raise ValueError(
                         "approved entry requires margin, stop and non-reduce-only plan"
                     )
+                if self.approved_action is RiskApprovedAction.OPEN_LONG:
+                    if self.stop_price >= self.approval_price:
+                        raise ValueError("approved long stop must remain below approval price")
+                elif self.stop_price <= self.approval_price:
+                    raise ValueError("approved short stop must remain above approval price")
+                minimum_margin = self.notional / self.leverage
+                if self.required_margin + 1e-9 < minimum_margin:
+                    raise ValueError("approved entry margin is below notional divided by leverage")
+                if self.initial_risk > self.risk_budget + max(1e-9, self.risk_budget * 1e-9):
+                    raise ValueError("approved entry initial risk exceeds its risk budget")
+                if (
+                    min(
+                        self.symbol_risk_after,
+                        self.portfolio_risk_after,
+                        self.group_risk_after,
+                    )
+                    + 1e-9
+                    < self.initial_risk
+                ):
+                    raise ValueError("approved entry risk-after values omit the new initial risk")
+                if (
+                    min(self.gross_notional_after, self.directional_notional_after) + 1e-9
+                    < self.notional
+                ):
+                    raise ValueError("approved entry notional-after values omit the new notional")
             else:
                 if self.requested_action is not StrategyAction.EXIT:
                     raise ValueError("approved exit does not match the strategy request")
-                if RiskReason.APPROVED_EXIT not in self.reasons:
-                    raise ValueError("approved exit requires the approved_exit reason")
+                if self.reasons != (RiskReason.APPROVED_EXIT,):
+                    raise ValueError("approved exit requires only the approved_exit reason")
                 if not self.reduce_only or self.required_margin != 0 or self.stop_price is not None:
                     raise ValueError("approved exit must be reduce-only without new margin or stop")
+                if self.leverage != 1 or self.risk_budget != 0 or self.initial_risk != 0:
+                    raise ValueError("approved exit cannot add leverage or new risk")
         else:
             if self.approved_action is not None or self.reduce_only:
                 raise ValueError("rejected risk decision cannot contain an approved action")
