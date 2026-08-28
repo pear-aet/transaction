@@ -35,6 +35,7 @@ class RiskReason(StrEnum):
     ACCOUNT_DRAWDOWN_LIMIT = "account_drawdown_limit"
     CONSECUTIVE_LOSS_LIMIT = "consecutive_loss_limit"
     STALE_INTENT = "stale_intent"
+    FUTURE_INTENT = "future_intent"
     STALE_ACCOUNT = "stale_account"
     STALE_MARKET = "stale_market"
     FUTURE_SNAPSHOT = "future_snapshot"
@@ -432,6 +433,7 @@ class RiskDecision:
     approved_action: RiskApprovedAction | None
     decision_time: int
     evaluated_at: int
+    valid_until: int
     reasons: tuple[RiskReason, ...]
     reference_price: float
     approval_price: float
@@ -470,9 +472,11 @@ class RiskDecision:
         )
         if any(not value for value in text_values):
             raise ValueError("risk decision text fields must not be empty")
-        counters = (self.decision_time, self.evaluated_at, self.sequence)
+        counters = (self.decision_time, self.evaluated_at, self.valid_until, self.sequence)
         if min(counters) < 0:
             raise ValueError("risk decision counters must be non-negative")
+        if self.valid_until < self.evaluated_at:
+            raise ValueError("risk decision cannot expire before evaluation")
         if self.intent_storage_sequence is not None and self.intent_storage_sequence <= 0:
             raise ValueError("intent_storage_sequence must be positive")
         if self.storage_sequence is not None and self.storage_sequence <= 0:
@@ -576,6 +580,7 @@ class RiskDecision:
                     None if self.approved_action is None else self.approved_action.value
                 ),
                 "decision_time": self.decision_time,
+                "valid_until": self.valid_until,
                 "reasons": [reason.value for reason in self.reasons],
                 "reference_price": self.reference_price,
                 "approval_price": self.approval_price,
@@ -636,6 +641,7 @@ class RiskDecision:
             ),
             decision_time=int(value["decision_time"]),
             evaluated_at=int(value["evaluated_at"]),
+            valid_until=int(value["valid_until"]),
             reasons=tuple(RiskReason(reason) for reason in value["reasons"]),
             reference_price=float(value["reference_price"]),
             approval_price=float(value["approval_price"]),

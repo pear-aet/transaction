@@ -96,6 +96,7 @@ def _decision_id(
     notional: float,
     leverage: float,
     stop_price: float | None,
+    valid_until: int,
 ) -> str:
     canonical = json.dumps(
         {
@@ -111,6 +112,7 @@ def _decision_id(
             "notional": format(notional, ".17g"),
             "leverage": format(leverage, ".17g"),
             "stop_price": None if stop_price is None else format(stop_price, ".17g"),
+            "valid_until": valid_until,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -129,6 +131,7 @@ def _reject(
 ) -> RiskDecision:
     resolved_reasons = _dedupe_reasons(reasons)
     market_price = context.market.mark_price if approval_price is None else approval_price
+    valid_until = context.evaluated_at
     decision_id = _decision_id(
         context,
         status=RiskDecisionStatus.REJECTED,
@@ -138,6 +141,7 @@ def _reject(
         notional=0.0,
         leverage=0.0,
         stop_price=context.intent.stop_price,
+        valid_until=valid_until,
     )
     account = context.account
     group = context.market.correlation_group
@@ -158,6 +162,7 @@ def _reject(
         approved_action=None,
         decision_time=context.intent.decision_time,
         evaluated_at=context.evaluated_at,
+        valid_until=valid_until,
         reasons=resolved_reasons,
         reference_price=context.intent.reference_price,
         approval_price=market_price,
@@ -210,6 +215,7 @@ def _approve_exit(
         / gross_after
     )
     reasons = (RiskReason.APPROVED_EXIT,)
+    valid_until = context.intent.decision_time + policy.max_intent_age_ms
     decision_id = _decision_id(
         context,
         status=RiskDecisionStatus.APPROVED,
@@ -219,6 +225,7 @@ def _approve_exit(
         notional=notional,
         leverage=1.0,
         stop_price=None,
+        valid_until=valid_until,
     )
     return RiskDecision(
         decision_id=decision_id,
@@ -237,6 +244,7 @@ def _approve_exit(
         approved_action=action,
         decision_time=context.intent.decision_time,
         evaluated_at=context.evaluated_at,
+        valid_until=valid_until,
         reasons=reasons,
         reference_price=context.intent.reference_price,
         approval_price=context.market.mark_price,
@@ -363,6 +371,13 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
 
     warnings: list[str] = []
     if intent.action is StrategyAction.EXIT:
+        exit_reasons: list[RiskReason] = []
+        if intent.decision_time > context.evaluated_at:
+            exit_reasons.append(RiskReason.FUTURE_INTENT)
+        if context.evaluated_at - intent.decision_time > policy.max_intent_age_ms:
+            exit_reasons.append(RiskReason.STALE_INTENT)
+        if exit_reasons:
+            return _reject(context, exit_reasons)
         position = account.position(intent.symbol)
         if position is None:
             return _reject(context, [RiskReason.NO_OPEN_POSITION])
@@ -387,6 +402,8 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
         reasons.append(RiskReason.SYMBOL_POSITION_EXISTS)
     if account.observed_at > context.evaluated_at or market.observed_at > context.evaluated_at:
         reasons.append(RiskReason.FUTURE_SNAPSHOT)
+    if intent.decision_time > context.evaluated_at:
+        reasons.append(RiskReason.FUTURE_INTENT)
     if context.evaluated_at - intent.decision_time > policy.max_intent_age_ms:
         reasons.append(RiskReason.STALE_INTENT)
     if context.evaluated_at - account.observed_at > policy.max_account_age_ms:
@@ -568,6 +585,11 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
 
     action = RiskApprovedAction.OPEN_LONG if side == "long" else RiskApprovedAction.OPEN_SHORT
     reasons_tuple = (RiskReason.APPROVED_ENTRY,)
+    valid_until = min(
+        intent.decision_time + policy.max_intent_age_ms,
+        account.observed_at + policy.max_account_age_ms,
+        market.observed_at + policy.max_market_age_ms,
+    )
     decision_id = _decision_id(
         context,
         status=RiskDecisionStatus.APPROVED,
@@ -577,6 +599,7 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
         notional=selected.notional,
         leverage=selected.leverage,
         stop_price=stop_price,
+        valid_until=valid_until,
     )
     return RiskDecision(
         decision_id=decision_id,
@@ -595,6 +618,7 @@ def evaluate_risk(context: RiskContext) -> RiskDecision:
         approved_action=action,
         decision_time=intent.decision_time,
         evaluated_at=context.evaluated_at,
+        valid_until=valid_until,
         reasons=reasons_tuple,
         reference_price=intent.reference_price,
         approval_price=fill_price,
