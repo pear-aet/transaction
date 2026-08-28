@@ -176,7 +176,9 @@ class StrategyReplayLedger:
         intent_sequences = [item.intent.storage_sequence for item in batch.intents]
         if any(sequence is None or sequence <= 0 for sequence in intent_sequences):
             raise ValueError("replay batch intents require positive storage sequences")
-        normalized_sequences = [int(sequence) for sequence in intent_sequences if sequence is not None]
+        normalized_sequences = [
+            int(sequence) for sequence in intent_sequences if sequence is not None
+        ]
         if normalized_sequences != sorted(set(normalized_sequences)):
             raise ValueError("replay batch intents are duplicate or out of order")
         if any(
