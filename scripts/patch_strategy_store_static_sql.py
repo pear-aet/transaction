@@ -103,6 +103,6 @@ for old, new in replacements:
 unused_import = "from typing import Any\n\n"
 if text.count(unused_import) != 1:
     raise SystemExit(f"expected exactly one unused Any import, found {text.count(unused_import)}")
-text = text.replace(unused_import, "", 1)
+text = text.replace(unused_import, "\n", 1)
 
 path.write_text(text, encoding="utf-8")
