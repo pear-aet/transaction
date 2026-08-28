@@ -45,6 +45,7 @@ jobs:
 
       - name: Format, lint and test
         run: |
+          ruff check --fix src tests
           ruff format src tests
           ruff check src tests
           pytest -q
