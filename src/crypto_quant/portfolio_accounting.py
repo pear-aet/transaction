@@ -16,7 +16,6 @@ from .execution_contracts import (
 from .portfolio_contracts import (
     ZERO,
     AccountBalances,
-    AccountMode,
     AccountPolicy,
     AccountSnapshot,
     AccountWatermarks,
@@ -513,9 +512,7 @@ def _fee_postings(
         return [], ZERO
     reserve_used = min(fee, reservation.fee_reserve_remaining)
     cash_used = fee - reserve_used
-    postings = [
-        _posting(JournalAccount.FEES, PostingSide.DEBIT, fee, policy, "execution fee")
-    ]
+    postings = [_posting(JournalAccount.FEES, PostingSide.DEBIT, fee, policy, "execution fee")]
     if reserve_used > ZERO:
         postings.append(
             _posting(
@@ -565,9 +562,7 @@ def apply_open_fill(
         policy=policy,
     )
     expected_side = (
-        PositionSide.LONG
-        if command.action is RiskApprovedAction.OPEN_LONG
-        else PositionSide.SHORT
+        PositionSide.LONG if command.action is RiskApprovedAction.OPEN_LONG else PositionSide.SHORT
     )
     if position is not None:
         if position.side is not expected_side or position.open_command_id != command.command_id:
@@ -629,6 +624,9 @@ def apply_open_fill(
         delta.quantity / command_quantity
     )
     margin_rate = as_decimal(maintenance_margin_rate, "maintenance_margin_rate")
+    if decision.stop_price is None:
+        raise PortfolioAccountingError("approved entry has no stop price")
+    stop_price = as_decimal(decision.stop_price, "stop_price")
     if position is None:
         next_position = PortfolioPosition(
             position_id=position_id(reservation.account_id, command.symbol, command.command_id),
@@ -638,6 +636,7 @@ def apply_open_fill(
             quantity=delta.quantity,
             average_entry_price=delta.price,
             mark_price=delta.price,
+            stop_price=stop_price,
             position_margin=margin_allocation,
             initial_risk=initial_risk_delta,
             maintenance_margin_rate=margin_rate,
@@ -653,6 +652,8 @@ def apply_open_fill(
         average = (
             position.average_entry_price * position.quantity + delta.quote_value
         ) / total_quantity
+        if position.stop_price != stop_price:
+            raise PortfolioAccountingError("entry fills disagree on the approved stop")
         next_position = replace(
             position,
             quantity=total_quantity,

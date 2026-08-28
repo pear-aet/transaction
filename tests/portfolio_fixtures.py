@@ -8,8 +8,8 @@ from crypto_quant.execution_contracts import (
     ExecutionContext,
     ExecutionMarketSnapshot,
     ExecutionMode,
-    ExecutionPolicy,
     ExecutionOrder,
+    ExecutionPolicy,
     OrderState,
     OrderUpdate,
 )
@@ -145,11 +145,7 @@ def cumulative_update(
     event_time: int,
     state: OrderState,
 ) -> OrderUpdate:
-    average = (
-        None
-        if cumulative_quantity == 0
-        else cumulative_quote_value / cumulative_quantity
-    )
+    average = None if cumulative_quantity == 0 else cumulative_quote_value / cumulative_quantity
     return OrderUpdate(
         update_id=update_id,
         order_id=order.order_id,

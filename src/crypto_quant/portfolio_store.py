@@ -688,14 +688,21 @@ class PortfolioStore:
             ).fetchone()
         return None if row is None else self._decode_position(str(row["payload"]))
 
+    def _positions_for_account(
+        self,
+        connection: sqlite3.Connection,
+        account_id: str,
+    ) -> list[PortfolioPosition]:
+        rows = connection.execute(
+            """SELECT payload FROM account_positions
+            WHERE account_id=? ORDER BY symbol""",
+            (account_id,),
+        ).fetchall()
+        return [self._decode_position(str(row["payload"])) for row in rows]
+
     def list_positions(self, account_id: str) -> list[PortfolioPosition]:
         with self._connect() as connection:
-            rows = connection.execute(
-                """SELECT payload FROM account_positions
-                WHERE account_id=? ORDER BY symbol""",
-                (account_id,),
-            ).fetchall()
-        return [self._decode_position(str(row["payload"])) for row in rows]
+            return self._positions_for_account(connection, account_id)
 
     def load_order_cursor(self, order_id: str, command_id: str) -> OrderAccountingCursor:
         with self._connect() as connection:
@@ -1040,7 +1047,7 @@ class PortfolioStore:
                 if existing.semantic_dict() != snapshot.semantic_dict():
                     raise AccountStoreConflict("account snapshot ID collision")
                 return SnapshotCommit(existing, True)
-            positions = self.list_positions(snapshot.account_id)
+            positions = self._positions_for_account(connection, snapshot.account_id)
             if [position.to_dict() for position in positions] != [
                 position.to_dict() for position in snapshot.positions
             ]:
@@ -1063,6 +1070,31 @@ class PortfolioStore:
             )
             sequence = int(cursor.lastrowid)
         return SnapshotCommit(snapshot.with_storage_sequence(sequence), False)
+
+    def load_snapshot(self, snapshot_id: str) -> AccountSnapshot | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM account_snapshots WHERE snapshot_id=?",
+                (snapshot_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AccountSnapshot.from_dict(json.loads(str(row["payload"]))).with_storage_sequence(
+            int(row["storage_sequence"])
+        )
+
+    def latest_snapshot(self, account_id: str) -> AccountSnapshot | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM account_snapshots
+                WHERE account_id=? ORDER BY storage_sequence DESC LIMIT 1""",
+                (account_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AccountSnapshot.from_dict(json.loads(str(row["payload"]))).with_storage_sequence(
+            int(row["storage_sequence"])
+        )
 
     def halt_account(self, account_id: str, reason: str, updated_at: int) -> bool:
         if not reason or updated_at < 0:

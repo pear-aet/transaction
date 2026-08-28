@@ -323,9 +323,7 @@ class JournalTransaction:
             ),
             evidence=dict(value.get("evidence") or {}),
             storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
             ),
             schema_version=int(value.get("schema_version", 1)),
         )
@@ -446,25 +444,17 @@ class AccountBalances:
             )
 
     def apply(self, transaction: JournalTransaction) -> AccountBalances:
-        values = {
-            account.value: self.balance(account)
-            for account in JournalAccount
-        }
+        values = {account.value: self.balance(account) for account in JournalAccount}
         for posting in transaction.postings:
             normal_debit = posting.account in _ASSET_ACCOUNTS | _EXPENSE_ACCOUNTS
-            increase = posting.side is (
-                PostingSide.DEBIT if normal_debit else PostingSide.CREDIT
-            )
+            increase = posting.side is (PostingSide.DEBIT if normal_debit else PostingSide.CREDIT)
             values[posting.account.value] += posting.amount if increase else -posting.amount
         result = AccountBalances(**values)
         result.assert_valid()
         return result
 
     def to_dict(self) -> dict[str, str]:
-        return {
-            account.value: decimal_string(self.balance(account))
-            for account in JournalAccount
-        }
+        return {account.value: decimal_string(self.balance(account)) for account in JournalAccount}
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> AccountBalances:
@@ -602,9 +592,7 @@ class CommandReservation:
             updated_at=int(value["updated_at"]),
             version=int(value.get("version", 1)),
             storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
             ),
         )
 
@@ -623,6 +611,7 @@ class PortfolioPosition:
     quantity: Decimal
     average_entry_price: Decimal
     mark_price: Decimal
+    stop_price: Decimal
     position_margin: Decimal
     initial_risk: Decimal
     maintenance_margin_rate: Decimal
@@ -654,14 +643,27 @@ class PortfolioPosition:
             "quantity",
             "average_entry_price",
             "mark_price",
+            "stop_price",
             "position_margin",
             "initial_risk",
             "maintenance_margin_rate",
         ):
             value = as_decimal(getattr(self, name), name)
             object.__setattr__(self, name, value)
-        if min(self.quantity, self.average_entry_price, self.mark_price) <= ZERO:
+        if (
+            min(
+                self.quantity,
+                self.average_entry_price,
+                self.mark_price,
+                self.stop_price,
+            )
+            <= ZERO
+        ):
             raise ValueError("position quantity and prices must be positive")
+        if self.side is PositionSide.LONG and self.stop_price >= self.average_entry_price:
+            raise ValueError("long position stop must be below average entry")
+        if self.side is PositionSide.SHORT and self.stop_price <= self.average_entry_price:
+            raise ValueError("short position stop must be above average entry")
         if min(self.position_margin, self.initial_risk) < ZERO:
             raise ValueError("position margin and initial risk must be non-negative")
         if not ZERO < self.maintenance_margin_rate < Decimal("1"):
@@ -693,6 +695,7 @@ class PortfolioPosition:
             "quantity": decimal_string(self.quantity),
             "average_entry_price": decimal_string(self.average_entry_price),
             "mark_price": decimal_string(self.mark_price),
+            "stop_price": decimal_string(self.stop_price),
             "position_margin": decimal_string(self.position_margin),
             "initial_risk": decimal_string(self.initial_risk),
             "maintenance_margin_rate": decimal_string(self.maintenance_margin_rate),
@@ -713,10 +716,9 @@ class PortfolioPosition:
             symbol=str(value["symbol"]),
             side=PositionSide(value["side"]),
             quantity=as_decimal(value["quantity"], "quantity"),
-            average_entry_price=as_decimal(
-                value["average_entry_price"], "average_entry_price"
-            ),
+            average_entry_price=as_decimal(value["average_entry_price"], "average_entry_price"),
             mark_price=as_decimal(value["mark_price"], "mark_price"),
+            stop_price=as_decimal(value["stop_price"], "stop_price"),
             position_margin=as_decimal(value["position_margin"], "position_margin"),
             initial_risk=as_decimal(value["initial_risk"], "initial_risk"),
             maintenance_margin_rate=as_decimal(
@@ -740,12 +742,15 @@ class AccountWatermarks:
     funding_sequence: int = 0
 
     def __post_init__(self) -> None:
-        if min(
-            self.execution_command_sequence,
-            self.execution_update_sequence,
-            self.market_sequence,
-            self.funding_sequence,
-        ) < 0:
+        if (
+            min(
+                self.execution_command_sequence,
+                self.execution_update_sequence,
+                self.market_sequence,
+                self.funding_sequence,
+            )
+            < 0
+        ):
             raise ValueError("account watermarks must be non-negative")
 
     def to_dict(self) -> dict[str, int]:
@@ -755,6 +760,15 @@ class AccountWatermarks:
             "market_sequence": self.market_sequence,
             "funding_sequence": self.funding_sequence,
         }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> AccountWatermarks:
+        return cls(
+            execution_command_sequence=int(value.get("execution_command_sequence", 0)),
+            execution_update_sequence=int(value.get("execution_update_sequence", 0)),
+            market_sequence=int(value.get("market_sequence", 0)),
+            funding_sequence=int(value.get("funding_sequence", 0)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -793,6 +807,10 @@ class AccountSnapshot:
         symbols = [position.symbol for position in self.positions]
         if symbols != sorted(symbols) or len(symbols) != len(set(symbols)):
             raise ValueError("snapshot positions must be unique and sorted by symbol")
+        if any(position.account_id != self.account_id for position in self.positions):
+            raise ValueError("snapshot contains a position from another account")
+        if any(position.updated_at > self.observed_at for position in self.positions):
+            raise ValueError("snapshot precedes one of its positions")
         if len(self.halt_reasons) != len(set(self.halt_reasons)):
             raise ValueError("snapshot halt reasons must be unique")
 
@@ -840,6 +858,50 @@ class AccountSnapshot:
             "storage_sequence": self.storage_sequence,
         }
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> AccountSnapshot:
+        snapshot = cls(
+            snapshot_id=str(value["snapshot_id"]),
+            account_id=str(value["account_id"]),
+            observed_at=int(value["observed_at"]),
+            balances=AccountBalances.from_dict(dict(value["balances"])),
+            positions=tuple(
+                PortfolioPosition.from_dict(position) for position in value.get("positions", [])
+            ),
+            day_start_equity=as_decimal(
+                value["day_start_equity"],
+                "day_start_equity",
+            ),
+            peak_equity=as_decimal(value["peak_equity"], "peak_equity"),
+            consecutive_losses=int(value["consecutive_losses"]),
+            watermarks=AccountWatermarks.from_dict(dict(value["watermarks"])),
+            global_halt=bool(value.get("global_halt", False)),
+            day_halt=bool(value.get("day_halt", False)),
+            drawdown_halt=bool(value.get("drawdown_halt", False)),
+            halt_reasons=tuple(
+                AccountHaltReason(reason) for reason in value.get("halt_reasons", [])
+            ),
+            storage_sequence=(
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
+            ),
+            schema_version=int(value.get("schema_version", 1)),
+        )
+        derived = {
+            "unrealized_pnl": snapshot.unrealized_pnl,
+            "equity": snapshot.equity,
+            "available_balance": snapshot.available_balance,
+            "maintenance_margin": snapshot.maintenance_margin,
+        }
+        for name, expected in derived.items():
+            if name in value and as_decimal(value[name], name) != expected:
+                raise ValueError(f"serialized account snapshot has inconsistent {name}")
+        return snapshot
+
+    def with_storage_sequence(self, sequence: int) -> AccountSnapshot:
+        if sequence <= 0:
+            raise ValueError("snapshot storage sequence must be positive")
+        return replace(self, storage_sequence=sequence)
+
     def to_risk_snapshot(self) -> AccountRiskSnapshot:
         return AccountRiskSnapshot(
             snapshot_id=self.snapshot_id,
@@ -861,6 +923,7 @@ class AccountSnapshot:
                     initial_risk=float(position.initial_risk),
                     maintenance_margin_rate=float(position.maintenance_margin_rate),
                     correlation_group=position.correlation_group,
+                    stop_price=float(position.stop_price),
                 )
                 for position in self.positions
             ),

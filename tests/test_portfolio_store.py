@@ -2,6 +2,12 @@ from dataclasses import replace
 from decimal import Decimal
 
 import pytest
+from portfolio_fixtures import (
+    NOW,
+    cumulative_update,
+    execution_command,
+    risk_decision,
+)
 
 from crypto_quant.execution_contracts import OrderLegType, OrderState
 from crypto_quant.portfolio_accounting import (
@@ -18,13 +24,6 @@ from crypto_quant.portfolio_store import (
     AccountInstanceError,
     AccountStoreConflict,
     PortfolioStore,
-)
-
-from .portfolio_fixtures import (
-    NOW,
-    cumulative_update,
-    execution_command,
-    risk_decision,
 )
 
 
@@ -260,12 +259,14 @@ def test_stale_fill_result_cannot_advance_reservation_or_cursor(tmp_path) -> Non
 
 def test_snapshot_cannot_claim_unstored_position_or_balances(tmp_path) -> None:
     store, _, initialized = initialize_store(tmp_path)
-    decision = risk_decision()
-    command = execution_command(decision)
     snapshot = build_account_snapshot(
         account_id="paper",
         observed_at=NOW,
-        balances=replace(initialized.balances, cash=Decimal("9999")),
+        balances=replace(
+            initialized.balances,
+            cash=Decimal("9999"),
+            external_capital=Decimal("9999"),
+        ),
         positions=(),
         day_start_equity=10000,
         peak_equity=10000,

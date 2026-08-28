@@ -1,6 +1,12 @@
 from decimal import Decimal
 
 import pytest
+from portfolio_fixtures import (
+    NOW,
+    cumulative_update,
+    execution_command,
+    risk_decision,
+)
 
 from crypto_quant.execution_contracts import OrderLegType, OrderState
 from crypto_quant.portfolio_accounting import (
@@ -23,13 +29,6 @@ from crypto_quant.portfolio_contracts import (
     ReservationState,
 )
 from crypto_quant.strategy_contracts import StrategyAction
-
-from .portfolio_fixtures import (
-    NOW,
-    cumulative_update,
-    execution_command,
-    risk_decision,
-)
 
 
 def initialized_balances(policy: AccountPolicy) -> AccountBalances:
