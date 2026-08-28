@@ -163,9 +163,30 @@ class StrategyReplayLedger:
     ) -> StrategyConsumerOffset:
         if updated_at < 0:
             raise ValueError("updated_at must be non-negative")
+        if not batch.consumer or not batch.filter_hash:
+            raise ValueError("replay batch identifiers must not be empty")
+        if batch.start_sequence < 0:
+            raise ValueError("replay batch start_sequence must be non-negative")
+        if batch.high_watermark < batch.start_sequence:
+            raise ValueError("replay batch high_watermark cannot precede its start")
+        if not batch.start_sequence <= batch.scanned_through <= batch.high_watermark:
+            raise ValueError("replay batch scanned_through must remain within its snapshot")
+        if batch.skipped < 0:
+            raise ValueError("replay batch skipped count must be non-negative")
+        intent_sequences = [item.intent.storage_sequence for item in batch.intents]
+        if any(sequence is None or sequence <= 0 for sequence in intent_sequences):
+            raise ValueError("replay batch intents require positive storage sequences")
+        normalized_sequences = [int(sequence) for sequence in intent_sequences if sequence is not None]
+        if normalized_sequences != sorted(set(normalized_sequences)):
+            raise ValueError("replay batch intents are duplicate or out of order")
+        if any(
+            sequence <= batch.start_sequence or sequence > batch.scanned_through
+            for sequence in normalized_sequences
+        ):
+            raise ValueError("replay batch intent sequence falls outside the scanned range")
         with self._lock, self._connect() as connection:
             latest = self.store.latest_intent_sequence()
-            if batch.scanned_through > latest:
+            if batch.high_watermark > latest or batch.scanned_through > latest:
                 raise ValueError("consumer offset cannot exceed the strategy intent log")
             row = connection.execute(
                 "SELECT * FROM strategy_consumer_offsets WHERE consumer=?",
