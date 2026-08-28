@@ -36,6 +36,14 @@ class ExecutionBroker(Protocol):
         now_ms: int,
     ) -> tuple[OrderUpdate, ...]: ...
 
+    def cancel(
+        self,
+        order: ExecutionOrder,
+        *,
+        event_time: int,
+        reason: str,
+    ) -> tuple[OrderUpdate, ...]: ...
+
 
 class ShadowBroker:
     """Explicit non-broker used to prove shadow mode has no dispatch path."""
@@ -57,6 +65,16 @@ class ShadowBroker:
     ) -> tuple[OrderUpdate, ...]:
         del command, orders, now_ms
         raise ExecutionBrokerError("shadow execution has no protection dispatch capability")
+
+    def cancel(
+        self,
+        order: ExecutionOrder,
+        *,
+        event_time: int,
+        reason: str,
+    ) -> tuple[OrderUpdate, ...]:
+        del order, event_time, reason
+        raise ExecutionBrokerError("shadow execution has no cancellation capability")
 
 
 class SimulatedBroker:
@@ -174,24 +192,38 @@ class SimulatedBroker:
         *,
         activation: str,
     ) -> tuple[OrderUpdate, ...]:
-        if order.state is not OrderState.PLANNED:
-            return ()
-        broker_order_id = self._broker_order_id(order)
-        dispatched = self._update(
-            order,
-            new_state=OrderState.DISPATCHED,
-            event_time=now_ms,
-            broker_order_id=broker_order_id,
-            evidence={"operation": "dispatch", "activation": activation},
-        )
-        acknowledged = self._update(
-            order,
-            new_state=OrderState.ACKNOWLEDGED,
-            event_time=now_ms,
-            broker_order_id=broker_order_id,
-            evidence={"operation": "acknowledge", "activation": activation},
-        )
-        return dispatched, acknowledged
+        broker_order_id = order.broker_order_id or self._broker_order_id(order)
+        if order.state is OrderState.PLANNED:
+            dispatched = self._update(
+                order,
+                new_state=OrderState.DISPATCHED,
+                event_time=now_ms,
+                broker_order_id=broker_order_id,
+                evidence={"operation": "dispatch", "activation": activation},
+            )
+            acknowledged = self._update(
+                order,
+                new_state=OrderState.ACKNOWLEDGED,
+                event_time=now_ms,
+                broker_order_id=broker_order_id,
+                evidence={"operation": "acknowledge", "activation": activation},
+            )
+            return dispatched, acknowledged
+        if order.state is OrderState.DISPATCHED:
+            return (
+                self._update(
+                    order,
+                    new_state=OrderState.ACKNOWLEDGED,
+                    event_time=now_ms,
+                    broker_order_id=broker_order_id,
+                    evidence={
+                        "operation": "acknowledge",
+                        "activation": activation,
+                        "recovered": True,
+                    },
+                ),
+            )
+        return ()
 
     def dispatch(
         self,
@@ -219,7 +251,15 @@ class SimulatedBroker:
             return ()
         if protective.activation_order_id != primary.order_id:
             raise ExecutionBrokerError("protective stop activation parent is invalid")
-        if primary.state not in {OrderState.PARTIALLY_FILLED, OrderState.FILLED}:
+        if primary.state not in {
+            OrderState.PARTIALLY_FILLED,
+            OrderState.FILLED,
+            OrderState.CANCELED,
+        }:
+            return ()
+        if primary.cumulative_filled_quantity <= 0:
+            return ()
+        if protective.terminal:
             return ()
         return self._dispatch_order(protective, now_ms, activation=primary.state.value)
 
@@ -231,6 +271,7 @@ class SimulatedBroker:
         fill_price: float,
         fee: float,
         event_time: int,
+        reducible_quantity: float | None = None,
     ) -> OrderUpdate:
         if order.state not in {
             OrderState.ACKNOWLEDGED,
@@ -249,6 +290,19 @@ class SimulatedBroker:
         cumulative_quantity = order.cumulative_filled_quantity + fill_quantity
         if cumulative_quantity > order.quantity + 1e-12:
             raise ExecutionBrokerError("simulated fill exceeds requested quantity")
+        if order.reduce_only:
+            if reducible_quantity is None:
+                raise ExecutionBrokerError(
+                    "reduce-only simulated fill requires the current reducible quantity"
+                )
+            if not math.isfinite(reducible_quantity) or reducible_quantity < 0:
+                raise ValueError("reducible_quantity must be finite and non-negative")
+            if cumulative_quantity > reducible_quantity + 1e-12:
+                raise ExecutionBrokerError(
+                    "reduce-only simulated fill exceeds current reducible quantity"
+                )
+        elif reducible_quantity is not None:
+            raise ValueError("non-reduce-only fill cannot specify reducible_quantity")
         cumulative_quote = order.cumulative_quote_value + fill_quantity * fill_price
         average = cumulative_quote / cumulative_quantity
         new_state = (
@@ -270,6 +324,7 @@ class SimulatedBroker:
                 "fill_quantity": fill_quantity,
                 "fill_price": fill_price,
                 "fill_fee": fee,
+                "reducible_quantity": reducible_quantity,
             },
         )
 
