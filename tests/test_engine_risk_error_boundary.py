@@ -32,6 +32,4 @@ def test_risk_evaluator_value_error_is_not_mislabeled_as_invalid_strategy_intent
         engine.process_bar(SYMBOL, bar, [bar], [], generate_signal=False)
 
     assert state.positions == {}
-    assert not any(
-        event.get("reason") == "invalid_strategy_intent" for event in state.events
-    )
+    assert not any(event.get("reason") == "invalid_strategy_intent" for event in state.events)
