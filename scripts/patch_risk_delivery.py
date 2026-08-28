@@ -163,3 +163,8 @@ replace_once(
             connection.execute(
 ''',
 )
+replace_once(
+    "src/crypto_quant/risk_engine.py",
+    "from .risk_store import RiskDeliveryState, RiskStore, StoredRiskDecision\n",
+    "from .risk_store import RiskDeliveryState, RiskStore\n",
+)
