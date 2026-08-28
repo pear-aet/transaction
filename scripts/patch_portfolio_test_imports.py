@@ -7,7 +7,7 @@ for name in (
     path = Path(name)
     text = path.read_text(encoding="utf-8")
     old = "from .portfolio_fixtures import ("
-    new = "from tests.portfolio_fixtures import ("
+    new = "from portfolio_fixtures import ("
     count = text.count(old)
     if count != 1:
         raise SystemExit(f"expected one fixture import in {name}, found {count}")
