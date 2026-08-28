@@ -59,6 +59,7 @@ class ExecutionBootstrapResult:
     expired: int
     blocked_on_unpublished_source: int
     remaining_pending: int
+    reconciled: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +86,7 @@ class ExecutionEngineHealth:
     source_barriers: int = 0
     order_updates: int = 0
     protection_activations: int = 0
+    startup_reconciliations: int = 0
     failures: int = 0
     last_decision_id: str | None = None
     last_command_id: str | None = None
@@ -107,6 +109,7 @@ class ExecutionEngineHealth:
             "source_barriers": self.source_barriers,
             "order_updates": self.order_updates,
             "protection_activations": self.protection_activations,
+            "startup_reconciliations": self.startup_reconciliations,
             "failures": self.failures,
             "last_decision_id": self.last_decision_id,
             "last_command_id": self.last_command_id,
@@ -266,6 +269,7 @@ class ExecutionEngine:
                     stored.command.command_id,
                     now_ms,
                     failure_reason,
+                    evidence={"source": "order_reconciliation"},
                 )
                 if changed:
                     self.health.commands_failed += 1
@@ -285,6 +289,7 @@ class ExecutionEngine:
                 self.store.mark_completed,
                 stored.command.command_id,
                 now_ms,
+                evidence={"source": "order_reconciliation"},
             )
             if changed:
                 self.health.commands_completed += 1
@@ -295,11 +300,37 @@ class ExecutionEngine:
         now_ms: int,
     ) -> bool:
         command = stored.command
+        submitted_orders = [
+            order for order in stored.orders if order.state is not OrderState.PLANNED
+        ]
+        if submitted_orders:
+            recovered_dispatch_time = max(order.updated_at for order in submitted_orders)
+            if recovered_dispatch_time > command.valid_until:
+                raise ExecutionDispatchError(
+                    "persisted order update occurred after command validity"
+                )
+            changed = await asyncio.to_thread(
+                self.store.mark_dispatched,
+                command.command_id,
+                recovered_dispatch_time,
+                evidence={"source": "pending_order_recovery"},
+            )
+            if changed:
+                self.health.commands_dispatched += 1
+            refreshed = await asyncio.to_thread(
+                self.store.load_command,
+                command.command_id,
+            )
+            if refreshed is None:
+                raise RuntimeError("execution command disappeared during dispatch recovery")
+            await self._reconcile_command(refreshed, now_ms)
+            return True
         if now_ms > command.valid_until:
             changed = await asyncio.to_thread(
                 self.store.mark_expired,
                 command.command_id,
                 now_ms,
+                evidence={"source": "outbox_expiry"},
             )
             if changed:
                 self.health.commands_expired += 1
@@ -337,6 +368,7 @@ class ExecutionEngine:
                 self.store.mark_dispatched,
                 command.command_id,
                 now_ms,
+                evidence={"source": "local_simulation_broker"},
             )
             if changed:
                 self.health.commands_dispatched += 1
@@ -349,6 +381,30 @@ class ExecutionEngine:
             raise ExecutionDispatchError(
                 f"local simulation dispatch failed: {command.command_id}"
             ) from exc
+
+    async def _reconcile_active_commands(self, now_ms: int) -> int:
+        reconciled = 0
+        after_sequence = 0
+        while True:
+            active = await asyncio.to_thread(
+                self.store.active_commands,
+                engine_instance_id=self.settings.engine_instance_id,
+                after_sequence=after_sequence,
+                limit=self.settings.outbox_batch_size,
+            )
+            if not active:
+                break
+            for stored in active:
+                await self._reconcile_command(stored, now_ms)
+                reconciled += 1
+                sequence = stored.command.storage_sequence
+                if sequence is None:
+                    raise RuntimeError("active execution command has no storage sequence")
+                after_sequence = sequence
+            if len(active) < self.settings.outbox_batch_size:
+                break
+        self.health.startup_reconciliations += reconciled
+        return reconciled
 
     async def _flush_outbox_unlocked(
         self,
@@ -412,10 +468,17 @@ class ExecutionEngine:
         async with self._processing_lock:
             try:
                 result = await self._flush_outbox_unlocked(now_ms=current)
+                reconciled = await self._reconcile_active_commands(current)
                 self.health.bootstrapped = True
                 self.health.bootstrap_runs += 1
                 self.health.last_error = None
-                return result
+                return ExecutionBootstrapResult(
+                    result.dispatched,
+                    result.expired,
+                    result.blocked_on_unpublished_source,
+                    result.remaining_pending,
+                    reconciled,
+                )
             except Exception as exc:
                 self._record_failure(exc)
                 raise

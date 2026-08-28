@@ -19,7 +19,11 @@ from crypto_quant.execution_engine import (
     ExecutionEngineSettings,
     ExecutionSourceError,
 )
-from crypto_quant.execution_store import ExecutionDeliveryState, ExecutionStore
+from crypto_quant.execution_store import (
+    ExecutionDeliveryState,
+    ExecutionStore,
+    ExecutionUpdateConflict,
+)
 from crypto_quant.risk import evaluate_risk
 from crypto_quant.risk_contracts import (
     AccountRiskSnapshot,
@@ -435,3 +439,41 @@ def test_entry_command_completes_only_after_protective_fill_closes_exposure(tmp_
     stored = asyncio.run(engine.record_order_update(protection_fill))
     assert stored.delivery_state is ExecutionDeliveryState.COMPLETED
     assert engine.health.commands_completed == 1
+
+
+def test_protective_fill_cannot_exceed_primary_filled_exposure(tmp_path) -> None:
+    risk_store = RiskStore(tmp_path / "risk.db")
+    decision = persist_risk_decision(risk_store, published=True)
+    broker = SimulatedBroker()
+    engine, _, execution_store = make_engine(
+        tmp_path,
+        risk_store,
+        policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION),
+        broker=broker,
+    )
+    planned = asyncio.run(engine.plan_decision(decision, now_ms=NOW + 2))
+    stored = execution_store.load_command(planned.command.command_id)
+    assert stored is not None
+    primary = next(order for order in stored.orders if order.leg_type is OrderLegType.PRIMARY)
+    partial = broker.fill(
+        primary,
+        fill_quantity=primary.quantity / 2,
+        fill_price=100.1,
+        fee=0.1,
+        event_time=NOW + 3,
+    )
+    stored = asyncio.run(engine.record_order_update(partial))
+    protective = next(
+        order for order in stored.orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    overfill = broker.fill(
+        protective,
+        fill_quantity=protective.quantity,
+        fill_price=99,
+        fee=0.1,
+        event_time=NOW + 4,
+    )
+
+    with pytest.raises(ExecutionUpdateConflict, match="exceeds primary filled exposure"):
+        asyncio.run(engine.record_order_update(overfill))
+    assert execution_store.load_order_update(overfill.update_id) is None

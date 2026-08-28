@@ -2,14 +2,16 @@ import asyncio
 
 from crypto_quant.domain import MarketRules, RiskBracket
 from crypto_quant.execution import build_execution_command
+from crypto_quant.execution_broker import SimulatedBroker
 from crypto_quant.execution_contracts import (
     ExecutionContext,
     ExecutionMarketSnapshot,
     ExecutionMode,
     ExecutionPolicy,
+    OrderState,
 )
 from crypto_quant.execution_engine import ExecutionEngine, ExecutionEngineSettings
-from crypto_quant.execution_store import ExecutionStore
+from crypto_quant.execution_store import ExecutionDeliveryState, ExecutionStore
 from crypto_quant.risk import evaluate_risk
 from crypto_quant.risk_contracts import (
     AccountRiskSnapshot,
@@ -118,7 +120,10 @@ def test_bootstrap_rescans_dispatched_commands_for_terminal_reconciliation(tmp_p
                 NOW,
             )
         )
-        execution_store.commit_command(command, updated_at=NOW)
+        stored = execution_store.commit_command(command, updated_at=NOW).stored_command
+        broker = SimulatedBroker()
+        for update in broker.dispatch(stored.command, stored.orders, NOW):
+            execution_store.apply_order_update(update)
         execution_store.mark_dispatched(command.command_id, NOW)
         assert [item.command.command_id for item in execution_store.active_commands()] == [
             command.command_id
@@ -139,8 +144,54 @@ def test_bootstrap_rescans_dispatched_commands_for_terminal_reconciliation(tmp_p
             return None
 
         engine._reconcile_command = reconcile_probe
-        await engine.bootstrap(now_ms=NOW)
+        result = await engine.bootstrap(now_ms=NOW)
 
         assert len(calls) == 1
+        assert result.reconciled == 1
+
+    asyncio.run(scenario())
+
+
+def test_pending_acknowledged_order_recovers_after_command_ttl(tmp_path) -> None:
+    async def scenario() -> None:
+        database = tmp_path / "quant.db"
+        risk_store = RiskStore(database)
+        decision = persisted_decision(risk_store)
+        execution_store = ExecutionStore(database)
+        policy = ExecutionPolicy(mode=ExecutionMode.SIMULATION)
+        command = build_execution_command(
+            ExecutionContext(
+                "execution-primary",
+                decision,
+                execution_market(decision, NOW),
+                policy,
+                NOW,
+            )
+        )
+        stored = execution_store.commit_command(command, updated_at=NOW).stored_command
+        broker = SimulatedBroker()
+        for update in broker.dispatch(stored.command, stored.orders, NOW + 1):
+            execution_store.apply_order_update(update)
+        pending = execution_store.load_command(command.command_id)
+        assert pending is not None
+        assert pending.delivery_state is ExecutionDeliveryState.PENDING
+        assert pending.orders[0].state is OrderState.ACKNOWLEDGED
+
+        engine = ExecutionEngine(
+            ExecutionEngineSettings("execution-primary", "paper"),
+            policy,
+            execution_market,
+            store=execution_store,
+            risk_store=risk_store,
+            broker=broker,
+        )
+        result = await engine.bootstrap(now_ms=command.valid_until + 1)
+        recovered = execution_store.load_command(command.command_id)
+
+        assert result.dispatched == 1
+        assert recovered is not None
+        assert recovered.delivery_state is ExecutionDeliveryState.DISPATCHED
+        transitions = execution_store.command_transitions(command.command_id)
+        assert transitions[0].evidence == {"source": "pending_order_recovery"}
 
     asyncio.run(scenario())

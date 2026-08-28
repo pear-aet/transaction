@@ -4,6 +4,7 @@ import pytest
 
 from crypto_quant.domain import MarketRules, RiskBracket
 from crypto_quant.execution import build_execution_command
+from crypto_quant.execution_broker import SimulatedBroker
 from crypto_quant.execution_contracts import (
     ExecutionContext,
     ExecutionMarketSnapshot,
@@ -150,6 +151,7 @@ def test_shadow_command_and_orders_commit_atomically_and_idempotently(tmp_path) 
         "filled_orders": 0,
         "failed_orders": 0,
         "order_updates": 0,
+        "command_transitions": 0,
         "latest_command_sequence": 1,
     }
 
@@ -185,17 +187,56 @@ def test_execution_instance_pins_policy_and_mode(tmp_path) -> None:
 def test_simulation_outbox_and_delivery_transitions_are_monotonic(tmp_path) -> None:
     store = ExecutionStore(tmp_path / "quant.db")
     value = command(policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION))
-    commit = store.commit_command(value, updated_at=NOW)
+    stored = store.commit_command(value, updated_at=NOW).stored_command
+    broker = SimulatedBroker()
 
-    assert commit.stored_command.delivery_state is ExecutionDeliveryState.PENDING
+    assert stored.delivery_state is ExecutionDeliveryState.PENDING
     assert [item.command.command_id for item in store.pending_commands()] == [value.command_id]
     assert store.oldest_pending_created_at() == NOW
+    for update in broker.dispatch(stored.command, stored.orders, NOW + 1):
+        store.apply_order_update(update)
     assert store.mark_dispatched(value.command_id, NOW + 1) is True
     assert store.mark_dispatched(value.command_id, NOW + 2) is False
-    assert store.mark_completed(value.command_id, NOW + 2) is True
-    assert store.mark_completed(value.command_id, NOW + 3) is False
+
+    current = store.load_command(value.command_id)
+    assert current is not None
+    primary = current.orders[0]
+    store.apply_order_update(
+        broker.fill(
+            primary,
+            fill_quantity=primary.quantity,
+            fill_price=100.1,
+            fee=0.1,
+            event_time=NOW + 2,
+        )
+    )
+    current = store.load_command(value.command_id)
+    assert current is not None
+    for update in broker.activate_protection(current.command, current.orders, NOW + 2):
+        store.apply_order_update(update)
+    current = store.load_command(value.command_id)
+    assert current is not None
+    protective = current.orders[1]
+    store.apply_order_update(
+        broker.fill(
+            protective,
+            fill_quantity=protective.quantity,
+            fill_price=99,
+            fee=0.1,
+            event_time=NOW + 3,
+        )
+    )
+    assert store.mark_completed(value.command_id, NOW + 3) is True
+    assert store.mark_completed(value.command_id, NOW + 4) is False
     with pytest.raises(ValueError, match="cannot move"):
-        store.mark_failed(value.command_id, NOW + 4, "late_failure")
+        store.mark_failed(value.command_id, NOW + 5, "late_failure")
+
+    transitions = store.command_transitions(value.command_id)
+    assert [item.new_state for item in transitions] == [
+        ExecutionDeliveryState.DISPATCHED,
+        ExecutionDeliveryState.COMPLETED,
+    ]
+    assert all(item.source_decision_id == value.source_decision_id for item in transitions)
 
 
 def test_expired_pending_command_cannot_be_dispatched(tmp_path) -> None:
@@ -245,6 +286,7 @@ def test_order_updates_are_append_only_monotonic_and_idempotent(tmp_path) -> Non
         evidence={"source": "simulated_broker"},
     )
     store.apply_order_update(acknowledged)
+    store.mark_dispatched(value.command_id, NOW + 2)
     quantity = primary.quantity / 2
     price = 100.1
     partial = OrderUpdate(

@@ -176,7 +176,7 @@ def test_legacy_event_engine_uses_one_conservative_default_correlation_group() -
         take_profit=102,
         entry_time=0,
         entry_fee=0,
-        leverage=1,
+        effective_leverage=1,
         initial_risk=25,
         maintenance_margin_rate=0.005,
     )

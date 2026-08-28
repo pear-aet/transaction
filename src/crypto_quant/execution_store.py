@@ -6,6 +6,7 @@ import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from .execution import apply_order_update
 from .execution_contracts import (
@@ -13,6 +14,7 @@ from .execution_contracts import (
     ExecutionCommandStatus,
     ExecutionMode,
     ExecutionOrder,
+    OrderLegType,
     OrderState,
     OrderUpdate,
 )
@@ -84,6 +86,18 @@ class StoredOrderUpdate:
     storage_sequence: int
     prior_state: OrderState
     new_state: OrderState
+
+
+@dataclass(frozen=True, slots=True)
+class StoredCommandTransition:
+    storage_sequence: int
+    command_id: str
+    source_decision_id: str
+    event_time: int
+    prior_state: ExecutionDeliveryState
+    new_state: ExecutionDeliveryState
+    reason: str | None
+    evidence: dict[str, Any]
 
 
 class ExecutionStore:
@@ -186,6 +200,22 @@ class ExecutionStore:
                 );
                 CREATE INDEX IF NOT EXISTS execution_updates_order_sequence
                     ON execution_order_updates(order_id, storage_sequence);
+
+                CREATE TABLE IF NOT EXISTS execution_command_transitions (
+                    storage_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_id TEXT NOT NULL,
+                    source_decision_id TEXT NOT NULL,
+                    event_time INTEGER NOT NULL CHECK(event_time >= 0),
+                    prior_state TEXT NOT NULL,
+                    new_state TEXT NOT NULL,
+                    reason TEXT,
+                    evidence TEXT NOT NULL,
+                    UNIQUE(command_id, prior_state, new_state),
+                    FOREIGN KEY(command_id)
+                        REFERENCES execution_commands(command_id)
+                );
+                CREATE INDEX IF NOT EXISTS execution_transitions_command_sequence
+                    ON execution_command_transitions(command_id, storage_sequence);
                 """
             )
 
@@ -264,6 +294,16 @@ class ExecutionStore:
             ),
             broker_order_id=value.get("broker_order_id"),
             evidence=dict(value.get("evidence") or {}),
+        )
+
+    @staticmethod
+    def _encode_evidence(evidence: dict[str, Any] | None) -> str:
+        return json.dumps(
+            evidence or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
         )
 
     @staticmethod
@@ -529,9 +569,11 @@ class ExecutionStore:
         target: ExecutionDeliveryState,
         timestamp: int,
         reason: str | None = None,
+        evidence: dict[str, Any] | None = None,
     ) -> bool:
         if not command_id or timestamp < 0:
             raise ValueError("invalid execution delivery transition")
+        encoded_evidence = self._encode_evidence(evidence)
         with self._lock, self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -568,6 +610,28 @@ class ExecutionStore:
                 if stored.dispatched_at is not None and timestamp < stored.dispatched_at:
                     raise ValueError("execution failure cannot precede dispatch")
 
+            orders = stored.orders
+            primary = [order for order in orders if order.leg_type is OrderLegType.PRIMARY]
+            protective = [
+                order for order in orders if order.leg_type is OrderLegType.PROTECTIVE_STOP
+            ]
+            if target is ExecutionDeliveryState.DISPATCHED:
+                if len(primary) != 1 or primary[0].state not in {
+                    OrderState.DISPATCHED,
+                    OrderState.ACKNOWLEDGED,
+                    OrderState.PARTIALLY_FILLED,
+                    OrderState.FILLED,
+                }:
+                    raise ValueError("dispatch requires a submitted primary order")
+            elif target is ExecutionDeliveryState.COMPLETED:
+                if len(primary) != 1 or primary[0].state is not OrderState.FILLED:
+                    raise ValueError("completion requires a filled primary order")
+                if protective and any(order.state is not OrderState.FILLED for order in protective):
+                    raise ValueError("entry completion requires filled protective closure")
+            elif target is ExecutionDeliveryState.EXPIRED:
+                if any(order.state is not OrderState.PLANNED for order in orders):
+                    raise ValueError("command with submitted orders cannot expire")
+
             if target is ExecutionDeliveryState.DISPATCHED:
                 query = """UPDATE execution_commands SET
                     delivery_state='dispatched',dispatched_at=? WHERE command_id=?"""
@@ -585,33 +649,81 @@ class ExecutionStore:
                     delivery_state='failed',failed_at=?,failure_reason=? WHERE command_id=?"""
                 parameters = (timestamp, reason, command_id)
             connection.execute(query, parameters)
+            try:
+                connection.execute(
+                    """INSERT INTO execution_command_transitions(
+                        command_id,source_decision_id,event_time,prior_state,
+                        new_state,reason,evidence
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        command_id,
+                        stored.command.source_decision_id,
+                        timestamp,
+                        state.value,
+                        target.value,
+                        reason,
+                        encoded_evidence,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ExecutionCommandConflict(
+                    f"execution transition collision: {command_id}"
+                ) from exc
         return True
 
-    def mark_dispatched(self, command_id: str, dispatched_at: int) -> bool:
+    def mark_dispatched(
+        self,
+        command_id: str,
+        dispatched_at: int,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> bool:
         return self._transition_delivery(
             command_id,
             expected=frozenset({ExecutionDeliveryState.PENDING}),
             target=ExecutionDeliveryState.DISPATCHED,
             timestamp=dispatched_at,
+            evidence=evidence,
         )
 
-    def mark_completed(self, command_id: str, completed_at: int) -> bool:
+    def mark_completed(
+        self,
+        command_id: str,
+        completed_at: int,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> bool:
         return self._transition_delivery(
             command_id,
             expected=frozenset({ExecutionDeliveryState.DISPATCHED}),
             target=ExecutionDeliveryState.COMPLETED,
             timestamp=completed_at,
+            evidence=evidence,
         )
 
-    def mark_expired(self, command_id: str, expired_at: int) -> bool:
+    def mark_expired(
+        self,
+        command_id: str,
+        expired_at: int,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> bool:
         return self._transition_delivery(
             command_id,
             expected=frozenset({ExecutionDeliveryState.PENDING}),
             target=ExecutionDeliveryState.EXPIRED,
             timestamp=expired_at,
+            evidence=evidence,
         )
 
-    def mark_failed(self, command_id: str, failed_at: int, reason: str) -> bool:
+    def mark_failed(
+        self,
+        command_id: str,
+        failed_at: int,
+        reason: str,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> bool:
         return self._transition_delivery(
             command_id,
             expected=frozenset(
@@ -623,6 +735,7 @@ class ExecutionStore:
             target=ExecutionDeliveryState.FAILED,
             timestamp=failed_at,
             reason=reason,
+            evidence=evidence,
         )
 
     def load_order(self, order_id: str) -> ExecutionOrder | None:
@@ -666,6 +779,46 @@ class ExecutionStore:
             if order_row is None:
                 raise KeyError(f"execution order not found: {update.order_id}")
             current = self._decode_order(str(order_row["payload"]))
+            command_row = connection.execute(
+                "SELECT delivery_state FROM execution_commands WHERE command_id=?",
+                (current.command_id,),
+            ).fetchone()
+            if command_row is None:
+                raise RuntimeError("execution order exists without its parent command")
+            command_state = ExecutionDeliveryState(command_row["delivery_state"])
+            if command_state not in {
+                ExecutionDeliveryState.PENDING,
+                ExecutionDeliveryState.DISPATCHED,
+            }:
+                raise ExecutionUpdateConflict(
+                    f"new order update cannot target {command_state.value} command"
+                )
+            if command_state is ExecutionDeliveryState.PENDING:
+                if (
+                    update.new_state
+                    not in {
+                        OrderState.DISPATCHED,
+                        OrderState.ACKNOWLEDGED,
+                    }
+                    or update.cumulative_filled_quantity != 0
+                ):
+                    raise ExecutionUpdateConflict(
+                        "pending command accepts dispatch and acknowledgement updates only"
+                    )
+            if (
+                current.leg_type is OrderLegType.PROTECTIVE_STOP
+                and update.cumulative_filled_quantity > 0
+            ):
+                primary_row = connection.execute(
+                    """SELECT payload FROM execution_orders
+                    WHERE command_id=? AND leg_type='primary'""",
+                    (current.command_id,),
+                ).fetchone()
+                if primary_row is None:
+                    raise RuntimeError("protective order has no primary order")
+                primary = self._decode_order(str(primary_row["payload"]))
+                if update.cumulative_filled_quantity > primary.cumulative_filled_quantity + 1e-12:
+                    raise ExecutionUpdateConflict("protective fill exceeds primary filled exposure")
             updated = apply_order_update(current, update)
             cursor = connection.execute(
                 """INSERT INTO execution_order_updates(
@@ -730,6 +883,50 @@ class ExecutionStore:
             for row in rows
         ]
 
+    def active_commands(
+        self,
+        *,
+        engine_instance_id: str | None = None,
+        after_sequence: int = 0,
+        limit: int = 1000,
+    ) -> list[StoredExecutionCommand]:
+        if after_sequence < 0:
+            raise ValueError("after_sequence must be non-negative")
+        if not 1 <= limit <= 10_000:
+            raise ValueError("command limit must be in [1, 10000]")
+        query = """SELECT * FROM execution_commands
+        WHERE delivery_state='dispatched'
+        AND storage_sequence>?
+        AND (? IS NULL OR engine_instance_id=?)
+        ORDER BY storage_sequence LIMIT ?"""
+        parameters = (after_sequence, engine_instance_id, engine_instance_id, limit)
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+            return [self._stored_from_row(connection, row) for row in rows]
+
+    def command_transitions(self, command_id: str) -> list[StoredCommandTransition]:
+        if not command_id:
+            raise ValueError("command_id must not be empty")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM execution_command_transitions
+                WHERE command_id=? ORDER BY storage_sequence""",
+                (command_id,),
+            ).fetchall()
+        return [
+            StoredCommandTransition(
+                storage_sequence=int(row["storage_sequence"]),
+                command_id=str(row["command_id"]),
+                source_decision_id=str(row["source_decision_id"]),
+                event_time=int(row["event_time"]),
+                prior_state=ExecutionDeliveryState(row["prior_state"]),
+                new_state=ExecutionDeliveryState(row["new_state"]),
+                reason=None if row["reason"] is None else str(row["reason"]),
+                evidence=dict(json.loads(str(row["evidence"]))),
+            )
+            for row in rows
+        ]
+
     def latest_command_sequence(self) -> int:
         with self._connect() as connection:
             row = connection.execute(
@@ -764,6 +961,11 @@ class ExecutionStore:
             updates = int(
                 connection.execute("SELECT count(*) FROM execution_order_updates").fetchone()[0]
             )
+            transitions = int(
+                connection.execute("SELECT count(*) FROM execution_command_transitions").fetchone()[
+                    0
+                ]
+            )
             latest = int(
                 connection.execute(
                     "SELECT coalesce(max(storage_sequence),0) FROM execution_commands"
@@ -784,5 +986,6 @@ class ExecutionStore:
             "filled_orders": order_counts.get(OrderState.FILLED.value, 0),
             "failed_orders": order_counts.get(OrderState.FAILED.value, 0),
             "order_updates": updates,
+            "command_transitions": transitions,
             "latest_command_sequence": latest,
         }
