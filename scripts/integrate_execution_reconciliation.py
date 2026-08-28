@@ -175,3 +175,23 @@ replace_once(
     async def health_snapshot(self) -> dict[str, Any]:
 ''',
 )
+replace_once(
+    "tests/test_execution_runtime.py",
+    '''        await wait_until(
+            lambda: execution_store.metrics()["commands"] == 2,
+            "periodic durable catch-up did not release the upstream barrier",
+        )
+''',
+    '''        await wait_until(
+            lambda: (
+                execution_store.metrics()["commands"] == 2
+                and runtime.replay_ledger.offset(
+                    "execution-upstream-v1",
+                    runtime._durable_filter(),
+                ).sequence
+                == second.storage_sequence
+            ),
+            "periodic durable catch-up did not commit the released upstream barrier",
+        )
+''',
+)
