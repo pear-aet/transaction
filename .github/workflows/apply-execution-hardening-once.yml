@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/apply-execution-hardening-once.yml
       - scripts/apply_execution_hardening.py
+      - scripts/patch_execution_recovery_setup.py
 
 permissions:
   contents: write
@@ -38,7 +39,9 @@ jobs:
           pip install pip-audit bandit
 
       - name: Apply hardening patch
-        run: python scripts/apply_execution_hardening.py
+        run: |
+          python scripts/apply_execution_hardening.py
+          python scripts/patch_execution_recovery_setup.py
 
       - name: Format, lint and test
         run: |
@@ -52,6 +55,7 @@ jobs:
         run: |
           git rm .github/workflows/apply-execution-hardening-once.yml
           git rm scripts/apply_execution_hardening.py
+          git rm scripts/patch_execution_recovery_setup.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src tests
