@@ -8,6 +8,7 @@ from crypto_quant.risk_contracts import (
     AccountRiskSnapshot,
     MarketRiskSnapshot,
     PositionRiskSnapshot,
+    RiskApprovedAction,
     RiskContext,
     RiskDecision,
     RiskPolicy,
@@ -117,6 +118,76 @@ def test_risk_decision_round_trip_preserves_storage_metadata() -> None:
     assert RiskDecision.from_dict(decision.to_dict()) == decision
     assert decision.to_dict()["sequence"] == 4
     assert decision.to_dict()["storage_sequence"] == 5
+
+
+def test_reduce_only_exit_requires_no_new_margin() -> None:
+    position = PositionRiskSnapshot(
+        "BTC/USDT:USDT",
+        "long",
+        quantity=2,
+        entry_price=100,
+        mark_price=95,
+        initial_risk=50,
+        maintenance_margin_rate=0.005,
+        stop_price=90,
+    )
+    strategy_intent = StrategyIntent(
+        intent_id="exit-intent",
+        strategy_id="test",
+        strategy_version="1.0.0",
+        instance_id="strategy-primary",
+        symbol="BTC/USDT:USDT",
+        action=StrategyAction.EXIT,
+        decision_time=900_000,
+        created_at=900_001,
+        reference_price=95,
+        stop_price=None,
+        reason="risk_reduce",
+        source_event_id="market-exit",
+        source_sequence=2,
+        high_timeframe="1h",
+        low_timeframe="15m",
+        parameter_hash="hash",
+        evidence={},
+        storage_sequence=4,
+    )
+    account = AccountRiskSnapshot(
+        "account-exit",
+        "paper",
+        900_000,
+        9_900,
+        9_000,
+        position.notional * position.maintenance_margin_rate,
+        10_000,
+        10_000,
+        1,
+        positions=(position,),
+        global_halt=True,
+    )
+    market = MarketRiskSnapshot(
+        "market-exit",
+        "BTC/USDT:USDT",
+        900_000,
+        95,
+        rules(),
+    )
+
+    decision = evaluate_risk(
+        RiskContext(
+            "risk-primary",
+            strategy_intent,
+            account,
+            market,
+            RiskPolicy(),
+            900_001,
+        )
+    )
+
+    assert decision.approved_action is RiskApprovedAction.CLOSE_LONG
+    assert decision.reduce_only is True
+    assert decision.required_margin == 0
+    assert decision.stop_price is None
+    assert RiskDecision.from_dict(decision.to_dict()) == decision
 
 
 def test_contracts_reject_non_finite_values() -> None:
