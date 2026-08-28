@@ -15,7 +15,7 @@ NOW = 900_001
 
 
 def intent(index: int) -> StrategyIntent:
-    decision_time = 900_000
+    decision_time = 900_000 + index - 1
     return StrategyIntent(
         intent_id=f"intent-{index}",
         strategy_id="test",
