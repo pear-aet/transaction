@@ -393,13 +393,13 @@ class EventEngine:
     def _entry_risk_decision(
         self,
         symbol: str,
-        signal: Signal,
+        intent: StrategyIntent,
         bar: Candle,
     ) -> RiskDecision:
         return self.risk_evaluator(
             RiskContext(
                 "event-engine-risk-v1",
-                self._entry_risk_intent(symbol, signal, bar),
+                intent,
                 self._entry_account_snapshot(symbol, bar),
                 self._entry_market_snapshot(symbol, bar),
                 RiskPolicy.from_strategy_config(self.config),
@@ -409,7 +409,7 @@ class EventEngine:
 
     def _open(self, symbol: str, signal: Signal, bar: Candle) -> None:
         try:
-            decision = self._entry_risk_decision(symbol, signal, bar)
+            intent = self._entry_risk_intent(symbol, signal, bar)
         except ValueError as exc:
             self._record(
                 bar.timestamp,
@@ -419,6 +419,7 @@ class EventEngine:
                 error=str(exc),
             )
             return
+        decision = self._entry_risk_decision(symbol, intent, bar)
         if decision.status is RiskDecisionStatus.REJECTED:
             self._record(
                 bar.timestamp,

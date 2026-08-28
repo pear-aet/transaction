@@ -485,6 +485,8 @@ class RiskDecision:
             raise ValueError("risk decision schema_version must be positive")
         if not self.reasons:
             raise ValueError("risk decision requires at least one reason")
+        if len(self.reasons) != len(set(self.reasons)):
+            raise ValueError("risk decision reasons must be unique")
         numeric = (
             self.reference_price,
             self.approval_price,
@@ -536,17 +538,43 @@ class RiskDecision:
                 RiskApprovedAction.OPEN_SHORT,
             }
             if opening:
+                expected = {
+                    StrategyAction.ENTER_LONG: RiskApprovedAction.OPEN_LONG,
+                    StrategyAction.ENTER_SHORT: RiskApprovedAction.OPEN_SHORT,
+                }.get(self.requested_action)
+                if expected is not self.approved_action:
+                    raise ValueError("approved entry action does not match the strategy request")
+                if RiskReason.APPROVED_ENTRY not in self.reasons:
+                    raise ValueError("approved entry requires the approved_entry reason")
                 if self.reduce_only or self.required_margin <= 0 or self.stop_price is None:
                     raise ValueError(
                         "approved entry requires margin, stop and non-reduce-only plan"
                     )
-            elif not self.reduce_only or self.required_margin != 0 or self.stop_price is not None:
-                raise ValueError("approved exit must be reduce-only without new margin or stop")
+            else:
+                if self.requested_action is not StrategyAction.EXIT:
+                    raise ValueError("approved exit does not match the strategy request")
+                if RiskReason.APPROVED_EXIT not in self.reasons:
+                    raise ValueError("approved exit requires the approved_exit reason")
+                if not self.reduce_only or self.required_margin != 0 or self.stop_price is not None:
+                    raise ValueError("approved exit must be reduce-only without new margin or stop")
         else:
             if self.approved_action is not None or self.reduce_only:
                 raise ValueError("rejected risk decision cannot contain an approved action")
-            if any(value != 0 for value in (self.quantity, self.notional, self.leverage)):
-                raise ValueError("rejected risk decision cannot contain order sizing")
+            if (
+                RiskReason.APPROVED_ENTRY in self.reasons
+                or RiskReason.APPROVED_EXIT in self.reasons
+            ):
+                raise ValueError("rejected risk decision cannot contain an approval reason")
+            execution_values = (
+                self.quantity,
+                self.notional,
+                self.leverage,
+                self.required_margin,
+                self.risk_budget,
+                self.initial_risk,
+            )
+            if any(value != 0 for value in execution_values):
+                raise ValueError("rejected risk decision cannot contain execution sizing")
         _validate_strict_json(self.evidence)
         json.dumps(self.evidence, sort_keys=True, allow_nan=False)
 
