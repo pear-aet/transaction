@@ -96,6 +96,4 @@ def test_pending_intent_blocks_cursor_from_skipping_later_terminal_rows(tmp_path
 
 def test_pending_delivery_state_cannot_be_selected_for_durable_replay() -> None:
     with pytest.raises(ValueError, match="mutable pending"):
-        DurableIntentFilter(
-            delivery_states=frozenset({StrategyDeliveryState.PENDING})
-        )
+        DurableIntentFilter(delivery_states=frozenset({StrategyDeliveryState.PENDING}))
