@@ -824,6 +824,10 @@ class ExecutionStore:
                     f"new order update cannot target {command_state.value} command"
                 )
             if command_state is ExecutionDeliveryState.PENDING:
+                if current.leg_type is not OrderLegType.PRIMARY:
+                    raise ExecutionUpdateConflict(
+                        "pending command cannot update an activation-bound protective order"
+                    )
                 if (
                     update.new_state
                     not in {
@@ -833,12 +837,9 @@ class ExecutionStore:
                     or update.cumulative_filled_quantity != 0
                 ):
                     raise ExecutionUpdateConflict(
-                        "pending command accepts dispatch and acknowledgement updates only"
+                        "pending command accepts primary dispatch and acknowledgement only"
                     )
-            if (
-                current.leg_type is OrderLegType.PROTECTIVE_STOP
-                and update.cumulative_filled_quantity > 0
-            ):
+            if current.leg_type is OrderLegType.PROTECTIVE_STOP:
                 primary_row = connection.execute(
                     """SELECT payload FROM execution_orders
                     WHERE command_id=? AND leg_type='primary'""",
@@ -847,8 +848,43 @@ class ExecutionStore:
                 if primary_row is None:
                     raise RuntimeError("protective order has no primary order")
                 primary = self._decode_order(str(primary_row["payload"]))
+                if (
+                    current.state is OrderState.PLANNED
+                    and update.new_state is OrderState.DISPATCHED
+                    and primary.cumulative_filled_quantity <= 1e-12
+                ):
+                    raise ExecutionUpdateConflict(
+                        "protective order activation requires primary filled exposure"
+                    )
                 if update.cumulative_filled_quantity > primary.cumulative_filled_quantity + 1e-12:
                     raise ExecutionUpdateConflict("protective fill exceeds primary filled exposure")
+            elif (
+                current.leg_type is OrderLegType.PRIMARY
+                and update.cumulative_filled_quantity > current.cumulative_filled_quantity + 1e-12
+            ):
+                protective_row = connection.execute(
+                    """SELECT payload FROM execution_orders
+                    WHERE command_id=? AND leg_type='protective_stop'""",
+                    (current.command_id,),
+                ).fetchone()
+                if protective_row is not None:
+                    protective = self._decode_order(str(protective_row["payload"]))
+                    protection_has_triggered = (
+                        protective.cumulative_filled_quantity > 1e-12
+                        or protective.state
+                        in {
+                            OrderState.CANCEL_PENDING,
+                            OrderState.CANCELED,
+                            OrderState.REJECTED,
+                            OrderState.EXPIRED,
+                            OrderState.FAILED,
+                            OrderState.FILLED,
+                        }
+                    )
+                    if protection_has_triggered:
+                        raise ExecutionUpdateConflict(
+                            "primary fill cannot increase after protective execution starts"
+                        )
             updated = apply_order_update(current, update)
             cursor = connection.execute(
                 """INSERT INTO execution_order_updates(

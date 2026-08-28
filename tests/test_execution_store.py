@@ -389,3 +389,85 @@ def test_failed_primary_cannot_bypass_entry_completion_invariant(tmp_path) -> No
 
     with pytest.raises(ValueError, match="filled or OCO-canceled"):
         store.mark_completed(value.command_id, NOW + 5)
+
+
+def test_protective_activation_is_blocked_until_primary_exposure_exists(
+    tmp_path,
+) -> None:
+    store = ExecutionStore(tmp_path / "quant.db")
+    value = command(policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION))
+    stored = store.commit_command(value, updated_at=NOW).stored_command
+    broker = SimulatedBroker()
+    protective = stored.orders[1]
+    premature = OrderUpdate(
+        "premature-protective-dispatch",
+        protective.order_id,
+        NOW + 1,
+        OrderState.DISPATCHED,
+        0,
+        0,
+        0,
+        broker_order_id="sim-premature-protection",
+        evidence={"source": "activation_test"},
+    )
+
+    with pytest.raises(ExecutionUpdateConflict, match="pending command cannot update"):
+        store.apply_order_update(premature)
+
+    for update in broker.dispatch(stored.command, stored.orders, NOW + 1):
+        store.apply_order_update(update)
+    store.mark_dispatched(value.command_id, NOW + 1)
+    with pytest.raises(ExecutionUpdateConflict, match="requires primary filled exposure"):
+        store.apply_order_update(replace(premature, update_id="premature-after-dispatch"))
+
+
+def test_primary_fill_cannot_increase_after_protective_execution_starts(tmp_path) -> None:
+    store = ExecutionStore(tmp_path / "quant.db")
+    value = command(policy=ExecutionPolicy(mode=ExecutionMode.SIMULATION))
+    stored = store.commit_command(value, updated_at=NOW).stored_command
+    broker = SimulatedBroker()
+    for update in broker.dispatch(stored.command, stored.orders, NOW + 1):
+        store.apply_order_update(update)
+    store.mark_dispatched(value.command_id, NOW + 1)
+
+    current = store.load_command(value.command_id)
+    assert current is not None
+    primary = current.orders[0]
+    first_fill = primary.quantity / 2
+    store.apply_order_update(
+        broker.fill(
+            primary,
+            fill_quantity=first_fill,
+            fill_price=100.1,
+            fee=0.1,
+            event_time=NOW + 2,
+        )
+    )
+    current = store.load_command(value.command_id)
+    assert current is not None
+    for update in broker.activate_protection(current.command, current.orders, NOW + 2):
+        store.apply_order_update(update)
+    current = store.load_command(value.command_id)
+    assert current is not None
+    primary = current.orders[0]
+    protective = current.orders[1]
+    store.apply_order_update(
+        broker.fill(
+            protective,
+            fill_quantity=first_fill / 2,
+            fill_price=99,
+            fee=0.05,
+            event_time=NOW + 3,
+        )
+    )
+
+    with pytest.raises(ExecutionUpdateConflict, match="cannot increase after protective"):
+        store.apply_order_update(
+            broker.fill(
+                primary,
+                fill_quantity=first_fill / 2,
+                fill_price=100.2,
+                fee=0.05,
+                event_time=NOW + 4,
+            )
+        )

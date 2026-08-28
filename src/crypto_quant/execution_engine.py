@@ -242,6 +242,7 @@ class ExecutionEngine:
         primary_order = primary[0]
         protective_order = protective[0]
         protective_terminal_problem = protective_order.state in {
+            OrderState.CANCEL_PENDING,
             OrderState.CANCELED,
             OrderState.REJECTED,
             OrderState.EXPIRED,
@@ -758,6 +759,7 @@ class ExecutionEngine:
                     commit.order.cumulative_filled_quantity > 0
                     or commit.order.state
                     in {
+                        OrderState.CANCEL_PENDING,
                         OrderState.CANCELED,
                         OrderState.REJECTED,
                         OrderState.EXPIRED,

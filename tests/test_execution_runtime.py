@@ -255,8 +255,15 @@ def test_periodic_catch_up_releases_a_published_upstream_barrier_without_bus_eve
 
         risk_store.mark_published(first.decision_id, NOW + 20)
         await wait_until(
-            lambda: execution_store.metrics()["commands"] == 2,
-            "periodic durable catch-up did not release the upstream barrier",
+            lambda: (
+                execution_store.metrics()["commands"] == 2
+                and runtime.replay_ledger.offset(
+                    "execution-upstream-v1",
+                    runtime._durable_filter(),
+                ).sequence
+                == second.storage_sequence
+            ),
+            "periodic durable catch-up did not commit commands and cursor",
         )
         assert provider.calls == 2
         assert (
