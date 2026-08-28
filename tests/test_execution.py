@@ -208,9 +208,7 @@ def test_exit_plan_has_one_reduce_only_primary_order() -> None:
 def test_expired_risk_decision_produces_no_order_plan() -> None:
     current = context()
     expired = replace(current.decision, valid_until=NOW)
-    command = build_execution_command(
-        replace(current, decision=expired, planned_at=NOW + 1)
-    )
+    command = build_execution_command(replace(current, decision=expired, planned_at=NOW + 1))
 
     assert command.status is ExecutionCommandStatus.EXPIRED
     assert command.reasons == (ExecutionReason.RISK_DECISION_EXPIRED,)
@@ -253,10 +251,10 @@ def test_command_validation_rejects_changed_semantics() -> None:
     command = build_execution_command(selected_context)
     validate_execution_command(selected_context, command)
 
-    with pytest.raises(ExecutionCommandMismatch, match="quantity"):
+    with pytest.raises(ExecutionCommandMismatch, match="approval_price"):
         validate_execution_command(
             selected_context,
-            replace(command, quantity=command.quantity + 1),
+            replace(command, approval_price=command.approval_price + 0.1),
         )
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import replace
 from typing import Any
 
@@ -34,9 +33,7 @@ class OrderTransitionError(RuntimeError):
 
 
 _ALLOWED_TRANSITIONS: dict[OrderState, frozenset[OrderState]] = {
-    OrderState.PLANNED: frozenset(
-        {OrderState.DISPATCHED, OrderState.EXPIRED, OrderState.FAILED}
-    ),
+    OrderState.PLANNED: frozenset({OrderState.DISPATCHED, OrderState.EXPIRED, OrderState.FAILED}),
     OrderState.DISPATCHED: frozenset(
         {
             OrderState.ACKNOWLEDGED,
@@ -93,9 +90,7 @@ def _stable_identifier(prefix: str, payload: dict[str, Any], *, size: int = 16) 
 
 
 def _client_order_id(policy: ExecutionPolicy, command_id: str, leg: str) -> str:
-    digest = hashlib.blake2s(
-        f"{command_id}:{leg}".encode("utf-8"), digest_size=12
-    ).hexdigest()
+    digest = hashlib.blake2s(f"{command_id}:{leg}".encode(), digest_size=12).hexdigest()
     return f"{policy.client_order_prefix}_{leg[0]}_{digest}"
 
 
@@ -164,7 +159,7 @@ def _non_executable_command(
         stop_price=context.decision.stop_price,
         leverage=0.0,
         required_margin=0.0,
-        reduce_only=False,
+        reduce_only=context.decision.reduce_only,
         orders=(),
         market_snapshot_id=context.market.snapshot_id,
         evidence={
@@ -347,9 +342,7 @@ def validate_execution_command(
             for key in expected.semantic_dict()
             if command.semantic_dict().get(key) != expected.semantic_dict().get(key)
         ]
-        raise ExecutionCommandMismatch(
-            "execution command mismatch: " + ", ".join(fields)
-        )
+        raise ExecutionCommandMismatch("execution command mismatch: " + ", ".join(fields))
     return command
 
 
@@ -372,6 +365,9 @@ def apply_order_update(order: ExecutionOrder, update: OrderUpdate) -> ExecutionO
         raise OrderTransitionError("cumulative fee moved backwards")
     if update.cumulative_filled_quantity > order.quantity + 1e-12:
         raise OrderTransitionError("filled quantity exceeds requested quantity")
+    if update.new_state is OrderState.PARTIALLY_FILLED:
+        if update.cumulative_filled_quantity <= order.cumulative_filled_quantity + 1e-12:
+            raise OrderTransitionError("partial-fill update must increase filled quantity")
     if order.broker_order_id is not None and update.broker_order_id not in {
         None,
         order.broker_order_id,

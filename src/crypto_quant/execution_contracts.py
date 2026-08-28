@@ -260,14 +260,22 @@ class ExecutionOrder:
             abs_tol=1e-9,
         ):
             raise ValueError("filled state requires the complete quantity")
-        if self.state in {
-            OrderState.PLANNED,
-            OrderState.DISPATCHED,
-            OrderState.ACKNOWLEDGED,
-        } and self.cumulative_filled_quantity != 0:
+        if (
+            self.state
+            in {
+                OrderState.PLANNED,
+                OrderState.DISPATCHED,
+                OrderState.ACKNOWLEDGED,
+            }
+            and self.cumulative_filled_quantity != 0
+        ):
             raise ValueError("pre-fill order state cannot contain fills")
         _strict_json(self.evidence or {})
         json.dumps(self.evidence or {}, sort_keys=True, allow_nan=False)
+        if (self.evidence or {}).get("submitted") is not False:
+            raise ValueError("shadow/simulation order must remain submitted=false")
+        if (self.evidence or {}).get("network_write") is not False:
+            raise ValueError("shadow/simulation order cannot permit network writes")
 
     @property
     def terminal(self) -> bool:
@@ -281,6 +289,23 @@ class ExecutionOrder:
         if sequence <= 0:
             raise ValueError("order storage sequence must be positive")
         return replace(self, storage_sequence=sequence)
+
+    def plan_dict(self) -> dict[str, Any]:
+        return finite_json(
+            {
+                "order_id": self.order_id,
+                "command_id": self.command_id,
+                "client_order_id": self.client_order_id,
+                "leg_type": self.leg_type.value,
+                "side": self.side.value,
+                "order_type": self.order_type.value,
+                "quantity": self.quantity,
+                "reduce_only": self.reduce_only,
+                "trigger_price": self.trigger_price,
+                "activation_order_id": self.activation_order_id,
+                "evidence": self.evidence or {},
+            }
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return finite_json(
@@ -338,9 +363,7 @@ class ExecutionOrder:
             updated_at=int(value.get("updated_at", 0)),
             sequence=int(value.get("sequence", 0)),
             storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
             ),
             evidence=dict(value.get("evidence") or {}),
         )
@@ -391,12 +414,15 @@ class ExecutionCommand:
         )
         if any(not value for value in text_values):
             raise ValueError("execution command identifiers must not be empty")
-        if min(
-            self.source_decision_storage_sequence,
-            self.created_at,
-            self.valid_until,
-            self.sequence,
-        ) < 0:
+        if (
+            min(
+                self.source_decision_storage_sequence,
+                self.created_at,
+                self.valid_until,
+                self.sequence,
+            )
+            < 0
+        ):
             raise ValueError("execution command counters must be non-negative")
         if self.source_decision_storage_sequence <= 0:
             raise ValueError("source decision storage sequence must be positive")
@@ -471,15 +497,20 @@ class ExecutionCommand:
             raise ValueError("execution command requires one primary order")
         if primary:
             if primary[0].quantity != self.quantity or primary[0].reduce_only != self.reduce_only:
-                raise ValueError("primary order does not match command quantity or reduce-only flag")
+                raise ValueError(
+                    "primary order does not match command quantity or reduce-only flag"
+                )
         _strict_json(self.evidence)
         json.dumps(self.evidence, sort_keys=True, allow_nan=False)
+        if self.evidence.get("submitted") is not False:
+            raise ValueError("execution command must remain submitted=false")
+        if self.evidence.get("network_write") is not False:
+            raise ValueError("execution command cannot permit network writes")
 
     def with_storage_sequence(self, sequence: int) -> ExecutionCommand:
         if sequence <= 0:
             raise ValueError("command storage sequence must be positive")
-        orders = tuple(order.with_storage_sequence(order.storage_sequence or sequence) for order in self.orders)
-        return replace(self, storage_sequence=sequence, orders=orders)
+        return replace(self, storage_sequence=sequence)
 
     def semantic_dict(self) -> dict[str, Any]:
         return finite_json(
@@ -505,7 +536,7 @@ class ExecutionCommand:
                 "leverage": self.leverage,
                 "required_margin": self.required_margin,
                 "reduce_only": self.reduce_only,
-                "orders": [order.to_dict() for order in self.orders],
+                "orders": [order.plan_dict() for order in self.orders],
                 "market_snapshot_id": self.market_snapshot_id,
                 "evidence": self.evidence,
                 "schema_version": self.schema_version,
@@ -516,6 +547,7 @@ class ExecutionCommand:
         return finite_json(
             {
                 **self.semantic_dict(),
+                "orders": [order.to_dict() for order in self.orders],
                 "created_at": self.created_at,
                 "sequence": self.sequence,
                 "storage_sequence": self.storage_sequence,
@@ -543,9 +575,7 @@ class ExecutionCommand:
             quantity=float(value["quantity"]),
             reference_price=float(value["reference_price"]),
             approval_price=float(value["approval_price"]),
-            stop_price=(
-                None if value.get("stop_price") is None else float(value["stop_price"])
-            ),
+            stop_price=(None if value.get("stop_price") is None else float(value["stop_price"])),
             leverage=float(value["leverage"]),
             required_margin=float(value["required_margin"]),
             reduce_only=bool(value["reduce_only"]),
@@ -554,9 +584,7 @@ class ExecutionCommand:
             evidence=dict(value.get("evidence") or {}),
             sequence=int(value.get("sequence", 0)),
             storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
             ),
             schema_version=int(value.get("schema_version", 1)),
         )
@@ -591,6 +619,14 @@ class OrderUpdate:
         if self.cumulative_filled_quantity > 0:
             if self.average_fill_price is None or self.average_fill_price <= 0:
                 raise ValueError("filled update requires an average fill price")
+            expected_quote = self.cumulative_filled_quantity * self.average_fill_price
+            if not math.isclose(
+                self.cumulative_quote_value,
+                expected_quote,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            ):
+                raise ValueError("order update quote value is inconsistent with average fill price")
         elif self.average_fill_price is not None or self.cumulative_quote_value != 0:
             raise ValueError("unfilled update cannot contain fill values")
         _strict_json(self.evidence or {})
