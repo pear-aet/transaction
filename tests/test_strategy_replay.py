@@ -134,8 +134,6 @@ def test_consumer_filter_is_pinned_and_stale_batches_cannot_commit(tmp_path) -> 
         ledger.read_batch(
             "risk-v1",
             DurableIntentFilter(
-                intent_filter=StrategyIntentFilter(
-                    symbols=frozenset({"ETH/USDT:USDT"})
-                )
+                intent_filter=StrategyIntentFilter(symbols=frozenset({"ETH/USDT:USDT"}))
             ),
         )

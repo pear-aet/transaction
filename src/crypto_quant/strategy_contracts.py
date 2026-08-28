@@ -165,9 +165,7 @@ class StrategyIntent:
             evidence=dict(value.get("evidence") or {}),
             sequence=int(value.get("sequence", 0)),
             storage_sequence=(
-                None
-                if value.get("storage_sequence") is None
-                else int(value["storage_sequence"])
+                None if value.get("storage_sequence") is None else int(value["storage_sequence"])
             ),
             schema_version=int(value.get("schema_version", 1)),
         )
@@ -191,12 +189,8 @@ class StrategyIntentFilter:
 
     def to_dict(self) -> dict[str, list[str] | None]:
         return {
-            "strategy_ids": (
-                None if self.strategy_ids is None else sorted(self.strategy_ids)
-            ),
-            "instance_ids": (
-                None if self.instance_ids is None else sorted(self.instance_ids)
-            ),
+            "strategy_ids": (None if self.strategy_ids is None else sorted(self.strategy_ids)),
+            "instance_ids": (None if self.instance_ids is None else sorted(self.instance_ids)),
             "symbols": None if self.symbols is None else sorted(self.symbols),
             "actions": (
                 None if self.actions is None else sorted(item.value for item in self.actions)

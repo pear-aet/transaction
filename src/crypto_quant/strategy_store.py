@@ -201,9 +201,7 @@ class StrategyStore:
 
     @staticmethod
     def _decode_intent(payload: str, storage_sequence: int) -> StrategyIntent:
-        return StrategyIntent.from_dict(json.loads(payload)).with_storage_sequence(
-            storage_sequence
-        )
+        return StrategyIntent.from_dict(json.loads(payload)).with_storage_sequence(storage_sequence)
 
     @classmethod
     def _stored_intent_from_row(cls, row: sqlite3.Row) -> StoredIntent:
@@ -211,9 +209,7 @@ class StrategyStore:
             cls._decode_intent(str(row["payload"]), int(row["storage_sequence"])),
             StrategyDeliveryState(row["delivery_state"]),
             None if row["published_at"] is None else int(row["published_at"]),
-            None
-            if row["suppression_reason"] is None
-            else str(row["suppression_reason"]),
+            None if row["suppression_reason"] is None else str(row["suppression_reason"]),
         )
 
     @staticmethod
@@ -262,8 +258,7 @@ class StrategyStore:
         )
         if actual != expected:
             raise StrategyCheckpointError(
-                "strategy configuration changed for an existing instance; "
-                "use a new instance_id"
+                "strategy configuration changed for an existing instance; use a new instance_id"
             )
 
     def load_checkpoint(self, instance_id: str, symbol: str) -> StrategyCheckpoint | None:
@@ -323,8 +318,7 @@ class StrategyStore:
             )
         if evaluation.mode is not mode:
             raise StrategyIntentConflict(
-                f"evaluation mode changed at {event_time}: "
-                f"{evaluation.mode.value} != {mode.value}"
+                f"evaluation mode changed at {event_time}: {evaluation.mode.value} != {mode.value}"
             )
         proposed_intent_id = None if intent is None else intent.intent_id
         if evaluation.intent_id != proposed_intent_id:

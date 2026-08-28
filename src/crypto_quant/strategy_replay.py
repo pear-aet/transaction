@@ -23,18 +23,15 @@ class StrategyConsumerFilterMismatch(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class DurableIntentFilter:
     intent_filter: StrategyIntentFilter = StrategyIntentFilter()
-    delivery_states: frozenset[StrategyDeliveryState] = frozenset(
-        {StrategyDeliveryState.PUBLISHED}
-    )
+    delivery_states: frozenset[StrategyDeliveryState] = frozenset({StrategyDeliveryState.PUBLISHED})
 
     def __post_init__(self) -> None:
         if not self.delivery_states:
             raise ValueError("durable intent filter requires at least one delivery state")
 
     def matches(self, value: StoredIntent) -> bool:
-        return (
-            value.delivery_state in self.delivery_states
-            and self.intent_filter.matches(value.intent)
+        return value.delivery_state in self.delivery_states and self.intent_filter.matches(
+            value.intent
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -213,9 +210,7 @@ class StrategyReplayLedger:
     def metrics(self) -> dict[str, int]:
         with self._connect() as connection:
             consumers = int(
-                connection.execute(
-                    "SELECT count(*) FROM strategy_consumer_offsets"
-                ).fetchone()[0]
+                connection.execute("SELECT count(*) FROM strategy_consumer_offsets").fetchone()[0]
             )
         return {
             "durable_consumers": consumers,

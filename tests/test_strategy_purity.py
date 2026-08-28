@@ -36,9 +36,7 @@ def test_backtest_adapter_and_pure_strategy_entry_are_identical() -> None:
     )
     decision_time = low[-1].timestamp + LOW_MS
 
-    pure = evaluate_strategy(
-        StrategyContext(tuple(low), tuple(high), config, decision_time, None)
-    )
+    pure = evaluate_strategy(StrategyContext(tuple(low), tuple(high), config, decision_time, None))
     compatible = decide(low, high, config, None)
     repeated = evaluate_strategy(
         StrategyContext(tuple(low), tuple(high), config, decision_time, None)
@@ -68,9 +66,7 @@ def test_risk_and_leverage_configuration_cannot_change_strategy_decision() -> No
     )
     decision_time = low[-1].timestamp + LOW_MS
 
-    first = evaluate_strategy(
-        StrategyContext(tuple(low), tuple(high), base, decision_time, None)
-    )
+    first = evaluate_strategy(StrategyContext(tuple(low), tuple(high), base, decision_time, None))
     second = evaluate_strategy(
         StrategyContext(tuple(low), tuple(high), risk_changed, decision_time, None)
     )

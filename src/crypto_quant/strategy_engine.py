@@ -317,8 +317,7 @@ class StrategyEngine:
                 result = await self.intent_bus.publish(intent)
                 if result.intent is None and not result.duplicate:
                     raise StrategyDeliveryError(
-                        f"strategy intent has no matching critical delivery: "
-                        f"{intent.intent_id}"
+                        f"strategy intent has no matching critical delivery: {intent.intent_id}"
                     )
                 await asyncio.to_thread(
                     self.store.mark_published,
@@ -475,8 +474,7 @@ class StrategyEngine:
             self.health.intents_persisted += 1
             if (
                 committed.stored_intent is not None
-                and committed.stored_intent.delivery_state
-                is StrategyDeliveryState.SUPPRESSED
+                and committed.stored_intent.delivery_state is StrategyDeliveryState.SUPPRESSED
             ):
                 self.health.intents_suppressed += 1
         if delivery_required:
