@@ -1,0 +1,214 @@
+name: Fix Strategy Engine Final Once
+
+on:
+  push:
+    branches:
+      - strategy-engine-v1
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out strategy branch
+        uses: actions/checkout@v4
+        with:
+          ref: strategy-engine-v1
+          fetch-depth: 0
+
+      - name: Apply reviewed fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              if text.count(old) != 1:
+                  raise SystemExit(f"expected exactly one match in {path}, found {text.count(old)}")
+              file.write_text(text.replace(old, new), encoding="utf-8")
+
+          replace_once(
+              "src/crypto_quant/strategy_engine.py",
+              'f"strategy intent has no matching critical delivery: {intent.intent_id}"',
+              'f"strategy intent has no matching critical subscriber delivery: {intent.intent_id}"',
+          )
+
+          replace_once(
+              "src/crypto_quant/strategy.py",
+              '''            if timestamps != sorted(set(timestamps)):
+                raise ValueError(f"{name}-timeframe candles are duplicate or out of order")
+            if any(item.timestamp + interval > self.decision_time for item in candles):
+                raise ValueError(f"{name}-timeframe context contains future data")
+''',
+              '''            if timestamps != sorted(set(timestamps)):
+                raise ValueError(f"{name}-timeframe candles are duplicate or out of order")
+            if any(
+                current - previous != interval
+                for previous, current in zip(timestamps, timestamps[1:], strict=False)
+            ):
+                raise ValueError(f"{name}-timeframe context contains a gap")
+            if any(item.timestamp + interval > self.decision_time for item in candles):
+                raise ValueError(f"{name}-timeframe context contains future data")
+''',
+          )
+
+          replace_once(
+              "src/crypto_quant/strategy_replay.py",
+              '''        if updated_at < 0:
+            raise ValueError("updated_at must be non-negative")
+        with self._lock, self._connect() as connection:
+            latest = self.store.latest_intent_sequence()
+            if batch.scanned_through > latest:
+                raise ValueError("consumer offset cannot exceed the strategy intent log")
+''',
+              '''        if updated_at < 0:
+            raise ValueError("updated_at must be non-negative")
+        if not batch.consumer or not batch.filter_hash:
+            raise ValueError("replay batch identifiers must not be empty")
+        if batch.start_sequence < 0:
+            raise ValueError("replay batch start_sequence must be non-negative")
+        if batch.high_watermark < batch.start_sequence:
+            raise ValueError("replay batch high_watermark cannot precede its start")
+        if not batch.start_sequence <= batch.scanned_through <= batch.high_watermark:
+            raise ValueError("replay batch scanned_through must remain within its snapshot")
+        if batch.skipped < 0:
+            raise ValueError("replay batch skipped count must be non-negative")
+        intent_sequences = [item.intent.storage_sequence for item in batch.intents]
+        if any(sequence is None or sequence <= 0 for sequence in intent_sequences):
+            raise ValueError("replay batch intents require positive storage sequences")
+        normalized_sequences = [int(sequence) for sequence in intent_sequences if sequence is not None]
+        if normalized_sequences != sorted(set(normalized_sequences)):
+            raise ValueError("replay batch intents are duplicate or out of order")
+        if any(
+            sequence <= batch.start_sequence or sequence > batch.scanned_through
+            for sequence in normalized_sequences
+        ):
+            raise ValueError("replay batch intent sequence falls outside the scanned range")
+        with self._lock, self._connect() as connection:
+            latest = self.store.latest_intent_sequence()
+            if batch.high_watermark > latest or batch.scanned_through > latest:
+                raise ValueError("consumer offset cannot exceed the strategy intent log")
+''',
+          )
+
+          replace_once(
+              "tests/test_strategy_pipeline.py",
+              '''async def wait_for_bootstrap(engine: StrategyEngine) -> None:
+    for _ in range(500):
+        if engine.health.bootstrapped:
+            return
+        await asyncio.sleep(0.002)
+    raise AssertionError("strategy runtime did not finish bootstrap")
+
+
+def test_market_event_bus_to_persisted_strategy_intent_pipeline(tmp_path) -> None:
+''',
+              '''async def wait_for_bootstrap(engine: StrategyEngine) -> None:
+    for _ in range(500):
+        if engine.health.bootstrapped:
+            return
+        await asyncio.sleep(0.002)
+    raise AssertionError("strategy runtime did not finish bootstrap")
+
+
+async def wait_for_published(store: StrategyStore) -> None:
+    for _ in range(500):
+        if store.metrics()["published_intents"] == 1:
+            return
+        await asyncio.sleep(0.002)
+    raise AssertionError("strategy intent was delivered but not marked published")
+
+
+def test_market_event_bus_to_persisted_strategy_intent_pipeline(tmp_path) -> None:
+''',
+          )
+
+          replace_once(
+              "tests/test_strategy_pipeline.py",
+              '''        assert produced.storage_sequence == 1
+        assert produced.sequence == 1
+        assert store.metrics()["published_intents"] == 1
+''',
+              '''        assert produced.storage_sequence == 1
+        assert produced.sequence == 1
+        await wait_for_published(store)
+        assert store.metrics()["published_intents"] == 1
+''',
+          )
+
+          purity = Path("tests/test_strategy_purity.py")
+          purity_text = purity.read_text(encoding="utf-8")
+          if "import pytest\n" not in purity_text:
+              purity_text = purity_text.replace(
+                  "from dataclasses import replace\n\n",
+                  "from dataclasses import replace\n\nimport pytest\n\n",
+                  1,
+              )
+          gap_test = '''
+
+
+def test_strategy_context_rejects_internal_candle_gaps() -> None:
+    low = candles(100, LOW_MS)
+    high = candles(20, HIGH_MS)
+    gapped_low = tuple(low[:50] + low[51:])
+    config = StrategyConfig(
+        symbol="BTC/USDT:USDT",
+        high_timeframe="1h",
+        low_timeframe="15m",
+        entry_model="chan_fractal",
+    )
+    decision_time = low[-1].timestamp + LOW_MS
+
+    with pytest.raises(ValueError, match="contains a gap"):
+        StrategyContext(gapped_low, tuple(high), config, decision_time, None)
+'''
+          if "test_strategy_context_rejects_internal_candle_gaps" not in purity_text:
+              purity_text += gap_test
+          purity.write_text(purity_text, encoding="utf-8")
+
+          replay = Path("tests/test_strategy_replay.py")
+          replay_text = replay.read_text(encoding="utf-8")
+          if "from dataclasses import replace\n" not in replay_text:
+              replay_text = "from dataclasses import replace\n\n" + replay_text
+          replay_test = '''
+
+
+def test_replay_batch_cannot_commit_beyond_its_snapshot(tmp_path) -> None:
+    store = StrategyStore(tmp_path / "quant.db")
+    seed(store)
+    ledger = StrategyReplayLedger(store)
+    batch = ledger.read_batch("risk-v1")
+
+    with pytest.raises(ValueError, match="within its snapshot"):
+        ledger.commit_batch(
+            replace(batch, scanned_through=batch.high_watermark + 1),
+            updated_at=300,
+        )
+    with pytest.raises(ValueError, match="cannot exceed"):
+        ledger.commit_batch(
+            replace(batch, high_watermark=batch.high_watermark + 1),
+            updated_at=300,
+        )
+'''
+          if "test_replay_batch_cannot_commit_beyond_its_snapshot" not in replay_text:
+              replay_text += replay_test
+          replay.write_text(replay_text, encoding="utf-8")
+          PY
+
+      - name: Format and verify
+        run: |
+          python -m pip install "ruff>=0.12,<1"
+          ruff format src tests
+          ruff check src tests
+
+      - name: Remove one-shot workflow and commit
+        run: |
+          git rm .github/workflows/fix-strategy-final-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src tests
+          git commit -m "Harden Strategy Engine gaps and replay boundaries"
+          git push origin HEAD:strategy-engine-v1
