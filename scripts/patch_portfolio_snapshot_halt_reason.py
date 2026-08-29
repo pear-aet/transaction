@@ -1,12 +1,21 @@
 from pathlib import Path
 
 
+def replace_once(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"expected one Portfolio snapshot match, found {count}")
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
 path = Path("src/crypto_quant/portfolio_engine.py")
-text = path.read_text(encoding="utf-8")
-old = '''        halt_reasons = []
+replace_once(
+    path,
+    '''        halt_reasons = []
         for position in positions:
-'''
-new = '''        halt_reasons = []
+''',
+    '''        halt_reasons = []
         if instance.status is AccountStatus.HALTED:
             reason = instance.halt_reason or ""
             if reason.startswith("reconciliation:"):
@@ -20,8 +29,22 @@ new = '''        halt_reasons = []
             else:
                 halt_reasons.append(AccountHaltReason.RECONCILIATION_FAILURE)
         for position in positions:
-'''
-count = text.count(old)
-if count != 1:
-    raise SystemExit(f"expected one Portfolio snapshot halt anchor, found {count}")
-path.write_text(text.replace(old, new), encoding="utf-8")
+''',
+)
+replace_once(
+    path,
+    '''        self.health.last_snapshot_id = commit.snapshot.snapshot_id
+        self.health.last_error = None
+        return commit.snapshot
+''',
+    '''        self.health.last_snapshot_id = commit.snapshot.snapshot_id
+        if AccountHaltReason.RECONCILIATION_FAILURE in commit.snapshot.halt_reasons:
+            if self.health.last_error is None:
+                self.health.last_error = (
+                    "PortfolioHealthError: account halted by reconciliation failure"
+                )
+        else:
+            self.health.last_error = None
+        return commit.snapshot
+''',
+)
