@@ -42,7 +42,12 @@ def market_rules(symbol: str = SYMBOL) -> MarketRules:
 
 
 def strategy_intent(action: StrategyAction = StrategyAction.ENTER_LONG) -> StrategyIntent:
-    stop_price = 99 if action is StrategyAction.ENTER_LONG else None
+    if action is StrategyAction.ENTER_LONG:
+        stop_price = 99
+    elif action is StrategyAction.ENTER_SHORT:
+        stop_price = 101
+    else:
+        stop_price = None
     return StrategyIntent(
         intent_id=f"portfolio-intent-{action.value}",
         strategy_id="portfolio-test",
