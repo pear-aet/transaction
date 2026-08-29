@@ -44,6 +44,7 @@ replace_once(
     reservations_released: int
     command_high_watermark: int
     update_high_watermark: int
+    reconciliation_findings: int
     audit_findings: int
 ''',
 )
@@ -129,7 +130,7 @@ replace_once(
         )
 ''',
     '''        released = self.release_terminal_reservations(now_ms=current)
-        self.reconcile_execution(now_ms=current)
+        reconciliation_findings = self.reconcile_execution(now_ms=current)
         audit = self.audit_materialized_state(observed_at=current)
         return PortfolioBootstrapResult(
             commands_processed=commands_processed,
@@ -137,6 +138,7 @@ replace_once(
             reservations_released=released,
             command_high_watermark=command_after,
             update_high_watermark=update_after,
+            reconciliation_findings=reconciliation_findings,
             audit_findings=len(audit.findings),
         )
 ''',
