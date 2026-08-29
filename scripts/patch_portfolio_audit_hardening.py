@@ -25,6 +25,11 @@ new = '''        with self._connect() as connection:
                 raise ValueError("Portfolio audit cannot precede account state")
 '''
 count = text.count(old)
-if count != 1:
-    raise SystemExit(f"expected one Portfolio audit transaction anchor, found {count}")
-path.write_text(text.replace(old, new), encoding="utf-8")
+if count == 1:
+    path.write_text(text.replace(old, new), encoding="utf-8")
+elif count == 0 and new in text:
+    pass
+else:
+    raise SystemExit(
+        f"expected one Portfolio audit source or existing target, found {count}"
+    )
