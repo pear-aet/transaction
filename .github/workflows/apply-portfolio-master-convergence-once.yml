@@ -21,13 +21,16 @@ on:
       - scripts/patch_legacy_paper_boundary.py
       - src/crypto_quant/portfolio_audit.py
       - src/crypto_quant/research_accounting.py
+      - tests/portfolio_fixtures.py
       - tests/test_portfolio_audit.py
       - tests/test_portfolio_audit_integration.py
       - tests/test_portfolio_runtime_audit.py
       - tests/test_portfolio_network_boundary.py
       - tests/test_legacy_paper_boundary.py
       - tests/test_research_accounting_parity.py
+      - tests/test_research_accounting_short_parity.py
       - tests/test_research_accounting_partial_fills.py
+      - tests/test_research_accounting_exit_commands.py
 
 permissions:
   contents: write
@@ -118,7 +121,9 @@ jobs:
             tests/test_portfolio_network_boundary.py \
             tests/test_legacy_paper_boundary.py \
             tests/test_research_accounting_parity.py \
-            tests/test_research_accounting_partial_fills.py
+            tests/test_research_accounting_short_parity.py \
+            tests/test_research_accounting_partial_fills.py \
+            tests/test_research_accounting_exit_commands.py
 
       - name: Run complete project and security gates
         shell: bash
