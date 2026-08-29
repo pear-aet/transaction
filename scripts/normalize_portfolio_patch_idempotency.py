@@ -24,7 +24,6 @@ IDEMPOTENT = '''def replace_once(path: str, old: str, new: str) -> None:
 FILES = (
     "scripts/patch_portfolio_lifecycle.py",
     "scripts/patch_portfolio_lifecycle_failures.py",
-    "scripts/patch_portfolio_lifecycle_round4.py",
     "scripts/patch_portfolio_execution_events.py",
     "scripts/patch_portfolio_engine_boundaries.py",
     "scripts/patch_portfolio_convergence.py",
