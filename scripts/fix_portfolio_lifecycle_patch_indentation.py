@@ -11,7 +11,13 @@ replacements = {
 }
 for old, new in replacements.items():
     count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"expected one lifecycle patch match for {old!r}, found {count}")
-    text = text.replace(old, new)
+    if count == 1:
+        text = text.replace(old, new)
+    elif count == 0 and new in text:
+        continue
+    else:
+        raise SystemExit(
+            f"expected one lifecycle patch source or existing target for {old!r}, "
+            f"found {count}"
+        )
 path.write_text(text, encoding="utf-8")
