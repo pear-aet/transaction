@@ -19,6 +19,7 @@ replace_once(
     failures: int = 0
 ''',
     '''    reservations_released: int = 0
+    reconciliation_findings: int = 0
     audit_findings: int = 0
     snapshots_created: int = 0
     failures: int = 0
@@ -30,6 +31,7 @@ replace_once(
             "snapshots_created": self.snapshots_created,
 ''',
     '''            "reservations_released": self.reservations_released,
+            "reconciliation_findings": self.reconciliation_findings,
             "audit_findings": self.audit_findings,
             "snapshots_created": self.snapshots_created,
 ''',
@@ -40,6 +42,7 @@ replace_once(
             )
 ''',
     '''                bootstrap.reservations_released,
+                bootstrap.reconciliation_findings,
                 bootstrap.audit_findings,
             )
 ''',
@@ -50,6 +53,9 @@ replace_once(
                 self.health.last_cycle_at_ms = current
 ''',
     '''                self.health.reservations_released += bootstrap.reservations_released
+                self.health.reconciliation_findings += (
+                    bootstrap.reconciliation_findings
+                )
                 self.health.audit_findings += bootstrap.audit_findings
                 self.health.last_cycle_at_ms = current
 ''',
