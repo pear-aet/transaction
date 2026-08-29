@@ -26,6 +26,7 @@ on:
       - tests/test_portfolio_network_boundary.py
       - tests/test_legacy_paper_boundary.py
       - tests/test_research_accounting_parity.py
+      - tests/test_research_accounting_partial_fills.py
 
 permissions:
   contents: write
@@ -114,7 +115,8 @@ jobs:
             tests/test_portfolio_runtime_audit.py \
             tests/test_portfolio_network_boundary.py \
             tests/test_legacy_paper_boundary.py \
-            tests/test_research_accounting_parity.py
+            tests/test_research_accounting_parity.py \
+            tests/test_research_accounting_partial_fills.py
 
       - name: Run complete project and security gates
         shell: bash
