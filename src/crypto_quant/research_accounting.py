@@ -23,6 +23,7 @@ from .portfolio_contracts import (
     JournalTransaction,
     PortfolioPosition,
     ReservationState,
+    as_decimal,
 )
 from .portfolio_facts import ClosedPosition, MarkPriceFact
 from .risk_contracts import RiskDecision
@@ -51,6 +52,16 @@ class ResearchAccount:
     closed_positions: list[ClosedPosition] = field(default_factory=list)
     marks: dict[str, MarkPriceFact] = field(default_factory=dict)
     _transactions: dict[str, JournalTransaction] = field(default_factory=dict, repr=False)
+    _updates: dict[str, OrderUpdate] = field(default_factory=dict, repr=False)
+    _update_results: dict[str, PortfolioPosition | None] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _funding_sources: dict[str, tuple[str, Decimal, Decimal, int]] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    _funding_results: dict[str, PortfolioPosition] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if not self.account_id:
@@ -101,6 +112,24 @@ class ResearchAccount:
         self.balances = next_balances
         return True
 
+    def _duplicate_update(self, update: OrderUpdate) -> tuple[bool, PortfolioPosition | None]:
+        existing = self._updates.get(update.update_id)
+        if existing is None:
+            return False, None
+        if existing.to_dict() != update.to_dict():
+            raise ResearchAccountConflict(
+                f"research order update identity collision: {update.update_id}"
+            )
+        return True, self._update_results[update.update_id]
+
+    def _record_update(
+        self,
+        update: OrderUpdate,
+        result: PortfolioPosition | None,
+    ) -> None:
+        self._updates[update.update_id] = update
+        self._update_results[update.update_id] = result
+
     def cursor_for(self, order: ExecutionOrder) -> OrderAccountingCursor:
         cursor = self.cursors.get(order.order_id)
         if cursor is None:
@@ -121,6 +150,27 @@ class ResearchAccount:
     ) -> CommandReservation:
         if command.account_id != self.account_id:
             raise PortfolioAccountingError("command belongs to another research account")
+        existing = self.reservations.get(command.command_id)
+        if existing is not None:
+            expected = (
+                self.account_id,
+                command.source_decision_id,
+                command.symbol,
+                command.action,
+                as_decimal(command.quantity, "command quantity"),
+            )
+            actual = (
+                existing.account_id,
+                existing.source_decision_id,
+                existing.symbol,
+                existing.action,
+                existing.command_quantity,
+            )
+            if actual != expected or decision.decision_id != command.source_decision_id:
+                raise ResearchAccountConflict(
+                    f"research reservation changed: {command.command_id}"
+                )
+            return existing
         current_position = self.positions.get(command.symbol)
         locked_exit = sum(
             (
@@ -142,13 +192,6 @@ class ResearchAccount:
             current_position=current_position,
             already_locked_exit_quantity=locked_exit,
         )
-        existing = self.reservations.get(command.command_id)
-        if existing is not None:
-            if existing.to_dict() != plan.reservation.to_dict():
-                raise ResearchAccountConflict(
-                    f"research reservation changed: {command.command_id}"
-                )
-            return existing
         if plan.transaction is not None:
             self._commit_transaction(plan.transaction)
         self.reservations[command.command_id] = plan.reservation
@@ -164,6 +207,11 @@ class ResearchAccount:
         maintenance_margin_rate: Decimal | int | float | str,
         correlation_group: str = "default",
     ) -> PortfolioPosition:
+        duplicate, prior_result = self._duplicate_update(update)
+        if duplicate:
+            if prior_result is None:
+                raise ResearchAccountConflict("open update previously produced no position")
+            return prior_result
         reservation = self._reservation(command.command_id)
         result = apply_open_fill(
             command=command,
@@ -184,6 +232,7 @@ class ResearchAccount:
         self.reservations[command.command_id] = result.reservation
         self.positions[command.symbol] = result.position
         self.cursors[order.order_id] = result.cursor
+        self._record_update(update, result.position)
         return result.position
 
     def apply_close_update(
@@ -193,6 +242,9 @@ class ResearchAccount:
         order: ExecutionOrder,
         update: OrderUpdate,
     ) -> PortfolioPosition | None:
+        duplicate, prior_result = self._duplicate_update(update)
+        if duplicate:
+            return prior_result
         reservation = self._reservation(command.command_id)
         position = self.positions.get(command.symbol)
         if position is None:
@@ -217,6 +269,7 @@ class ResearchAccount:
             self.closed_positions.append(result.closed_position)
         else:
             self.positions[command.symbol] = result.position
+        self._record_update(update, result.position)
         return result.position
 
     def apply_funding(
@@ -228,20 +281,35 @@ class ResearchAccount:
         event_time: int,
         source_id: str,
     ) -> PortfolioPosition:
+        selected = (
+            symbol,
+            as_decimal(rate, "funding rate"),
+            as_decimal(mark_price, "funding mark price"),
+            event_time,
+        )
+        existing = self._funding_sources.get(source_id)
+        if existing is not None:
+            if existing != selected:
+                raise ResearchAccountConflict(
+                    f"research funding identity collision: {source_id}"
+                )
+            return self._funding_results[source_id]
         position = self.positions.get(symbol)
         if position is None:
             raise PortfolioAccountingError("funding requires an active position")
         result = apply_funding_to_position(
             account_id=self.account_id,
             position=position,
-            rate=rate,
-            mark_price=mark_price,
+            rate=selected[1],
+            mark_price=selected[2],
             event_time=event_time,
             source_id=source_id,
             policy=self.policy,
         )
         self._commit_transaction(result.transaction)
         self.positions[symbol] = result.position
+        self._funding_sources[source_id] = selected
+        self._funding_results[source_id] = result.position
         return result.position
 
     def apply_mark(self, fact: MarkPriceFact) -> PortfolioPosition | None:
