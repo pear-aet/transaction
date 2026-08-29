@@ -74,21 +74,27 @@ def risk_decision(
     action: StrategyAction = StrategyAction.ENTER_LONG,
     *,
     storage_sequence: int = 1,
+    position_side: str = "long",
+    position_quantity: float = 2,
+    position_entry_price: float = 100,
+    position_mark_price: float = 100,
+    position_initial_risk: float = 20,
+    position_stop_price: float = 90,
 ):
     position = None
     if action is StrategyAction.EXIT:
         position = PositionRiskSnapshot(
             SYMBOL,
-            "long",
-            quantity=2,
-            entry_price=100,
-            mark_price=100,
-            initial_risk=20,
+            position_side,
+            quantity=position_quantity,
+            entry_price=position_entry_price,
+            mark_price=position_mark_price,
+            initial_risk=position_initial_risk,
             maintenance_margin_rate=0.005,
-            stop_price=90,
+            stop_price=position_stop_price,
         )
     account = AccountRiskSnapshot(
-        f"portfolio-account-{action.value}",
+        f"portfolio-account-{action.value}-{storage_sequence}",
         "paper",
         NOW,
         10_000,
@@ -100,10 +106,10 @@ def risk_decision(
         () if position is None else (position,),
     )
     market = MarketRiskSnapshot(
-        f"portfolio-risk-market-{action.value}",
+        f"portfolio-risk-market-{action.value}-{storage_sequence}",
         SYMBOL,
         NOW,
-        100,
+        position_mark_price if position is not None else 100,
         market_rules(),
     )
     decision = evaluate_risk(
@@ -127,7 +133,7 @@ def execution_command(decision=None):
             "execution-primary",
             selected,
             ExecutionMarketSnapshot(
-                "portfolio-execution-market",
+                f"portfolio-execution-market-{selected.storage_sequence}",
                 selected.symbol,
                 NOW,
                 100,
