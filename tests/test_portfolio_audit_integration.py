@@ -70,3 +70,6 @@ def test_bootstrap_halts_before_publishing_healthy_snapshot_on_cache_drift(tmp_p
     assert instance.status is AccountStatus.HALTED
     assert snapshot.global_halt is True
     assert AccountHaltReason.RECONCILIATION_FAILURE in snapshot.halt_reasons
+    health = engine.health_snapshot()["engine"]
+    assert health["last_error"] is not None
+    assert "reconciliation" in health["last_error"].lower()
