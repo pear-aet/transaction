@@ -4,9 +4,14 @@ from pathlib import Path
 def replace_once(path: Path, old: str, new: str) -> None:
     text = path.read_text(encoding="utf-8")
     count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"expected one Portfolio snapshot match, found {count}")
-    path.write_text(text.replace(old, new), encoding="utf-8")
+    if count == 1:
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if count == 0 and new in text:
+        return
+    raise SystemExit(
+        f"expected one Portfolio snapshot source or existing target, found {count}"
+    )
 
 
 path = Path("src/crypto_quant/portfolio_engine.py")
