@@ -13,7 +13,7 @@ env:
 
 jobs:
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       materialization_required: ${{ steps.mode.outputs.materialization_required }}
     steps:
@@ -76,7 +76,7 @@ jobs:
 
   test:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -160,7 +160,7 @@ jobs:
 
   security:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -192,7 +192,7 @@ jobs:
 
   docker:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -214,7 +214,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/portfolio-account-engine-v1' &&
       needs.prepare.outputs.materialization_required == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
