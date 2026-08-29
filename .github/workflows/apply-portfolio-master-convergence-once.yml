@@ -19,8 +19,11 @@ on:
       - scripts/patch_portfolio_snapshot_halt_reason.py
       - scripts/patch_portfolio_runtime_audit_propagation.py
       - scripts/patch_legacy_paper_boundary.py
+      - scripts/patch_research_execution_hardening.py
       - src/crypto_quant/portfolio_audit.py
       - src/crypto_quant/research_accounting.py
+      - src/crypto_quant/research_execution.py
+      - src/crypto_quant/research_trading.py
       - tests/portfolio_fixtures.py
       - tests/test_portfolio_audit.py
       - tests/test_portfolio_audit_integration.py
@@ -31,6 +34,8 @@ on:
       - tests/test_research_accounting_short_parity.py
       - tests/test_research_accounting_partial_fills.py
       - tests/test_research_accounting_exit_commands.py
+      - tests/test_research_execution.py
+      - tests/test_research_trading.py
 
 permissions:
   contents: write
@@ -74,6 +79,7 @@ jobs:
           python scripts/patch_portfolio_snapshot_halt_reason.py
           python scripts/patch_portfolio_runtime_audit_propagation.py
           python scripts/patch_legacy_paper_boundary.py
+          python scripts/patch_research_execution_hardening.py
 
       - name: Format, lint and import smoke test
         run: |
@@ -93,6 +99,8 @@ jobs:
           from crypto_quant.portfolio_runtime import PortfolioRuntime
           from crypto_quant.portfolio_store import PortfolioStore
           from crypto_quant.research_accounting import ResearchAccount
+          from crypto_quant.research_execution import ResearchExecutionFactory
+          from crypto_quant.research_trading import ResearchTradeCoordinator
 
           assert LEGACY_PAPER_DISABLED
           assert apply_funding_to_position
@@ -102,6 +110,8 @@ jobs:
           assert PortfolioRuntime
           assert PortfolioStore
           assert ResearchAccount
+          assert ResearchExecutionFactory
+          assert ResearchTradeCoordinator
           PY
 
       - name: Run Portfolio focused tests
@@ -123,7 +133,9 @@ jobs:
             tests/test_research_accounting_parity.py \
             tests/test_research_accounting_short_parity.py \
             tests/test_research_accounting_partial_fills.py \
-            tests/test_research_accounting_exit_commands.py
+            tests/test_research_accounting_exit_commands.py \
+            tests/test_research_execution.py \
+            tests/test_research_trading.py
 
       - name: Run complete project and security gates
         shell: bash
@@ -169,7 +181,8 @@ jobs:
             scripts/patch_portfolio_audit_hardening.py \
             scripts/patch_portfolio_snapshot_halt_reason.py \
             scripts/patch_portfolio_runtime_audit_propagation.py \
-            scripts/patch_legacy_paper_boundary.py
+            scripts/patch_legacy_paper_boundary.py \
+            scripts/patch_research_execution_hardening.py
           rm -rf .validation
           git add -A src tests docs .github scripts .validation || true
           git config user.name "github-actions[bot]"
