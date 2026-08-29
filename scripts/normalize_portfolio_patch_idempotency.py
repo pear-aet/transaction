@@ -41,3 +41,28 @@ for name in FILES:
     if count != 1:
         raise SystemExit(f"expected one replace_once helper in {name}, found {count}")
     path.write_text(text.replace(STANDARD, IDEMPOTENT), encoding="utf-8")
+
+round4 = Path("scripts/patch_portfolio_lifecycle_round4.py")
+text = round4.read_text(encoding="utf-8")
+old = '''count = store.count(old)
+if count != 1:
+    raise SystemExit(f"expected one critical finding halt block, found {count}")
+STORE.write_text(store.replace(old, new), encoding="utf-8")
+'''
+new = '''count = store.count(old)
+if count == 1:
+    STORE.write_text(store.replace(old, new), encoding="utf-8")
+elif count == 0 and new in store:
+    pass
+else:
+    raise SystemExit(
+        f"expected one critical finding source or existing target, found {count}"
+    )
+'''
+count = text.count(old)
+if count == 1:
+    round4.write_text(text.replace(old, new), encoding="utf-8")
+elif count == 0 and new in text:
+    pass
+else:
+    raise SystemExit(f"expected one round4 normalization anchor, found {count}")
