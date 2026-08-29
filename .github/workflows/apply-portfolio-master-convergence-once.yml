@@ -19,11 +19,13 @@ on:
       - scripts/patch_portfolio_runtime_audit_propagation.py
       - scripts/patch_legacy_paper_boundary.py
       - src/crypto_quant/portfolio_audit.py
+      - src/crypto_quant/research_accounting.py
       - tests/test_portfolio_audit.py
       - tests/test_portfolio_audit_integration.py
       - tests/test_portfolio_runtime_audit.py
       - tests/test_portfolio_network_boundary.py
       - tests/test_legacy_paper_boundary.py
+      - tests/test_research_accounting_parity.py
 
 permissions:
   contents: write
@@ -84,6 +86,7 @@ jobs:
           from crypto_quant.portfolio_engine import PortfolioEngine
           from crypto_quant.portfolio_runtime import PortfolioRuntime
           from crypto_quant.portfolio_store import PortfolioStore
+          from crypto_quant.research_accounting import ResearchAccount
 
           assert LEGACY_PAPER_DISABLED
           assert apply_funding_to_position
@@ -92,6 +95,7 @@ jobs:
           assert PortfolioEngine
           assert PortfolioRuntime
           assert PortfolioStore
+          assert ResearchAccount
           PY
 
       - name: Run Portfolio focused tests
@@ -109,7 +113,8 @@ jobs:
             tests/test_portfolio_audit_integration.py \
             tests/test_portfolio_runtime_audit.py \
             tests/test_portfolio_network_boundary.py \
-            tests/test_legacy_paper_boundary.py
+            tests/test_legacy_paper_boundary.py \
+            tests/test_research_accounting_parity.py
 
       - name: Run complete project and security gates
         shell: bash
