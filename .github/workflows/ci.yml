@@ -1,12 +1,15 @@
 name: CI
+
 on:
   push:
   pull_request:
+
 permissions:
   contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -18,20 +21,32 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade pip "setuptools>=83"
-      - run: pip install -e ".[dev]"
+      - run: python -m pip install -e ".[dev]"
       - run: ruff format --check src tests
       - run: ruff check src tests
+      - run: python -m compileall -q src
+      - name: Import smoke test
+        run: |
+          python - <<'PY'
+          from crypto_quant.backtest import run_backtest, run_portfolio_backtest
+          from crypto_quant.portfolio_accounting import apply_funding_to_position, apply_mark_fact
+          from crypto_quant.portfolio_audit import PortfolioAuditor
+          from crypto_quant.portfolio_engine import PortfolioEngine
+          from crypto_quant.portfolio_runtime import PortfolioRuntime
+          from crypto_quant.research_engine import ResearchEventEngine
+
+          assert run_backtest and run_portfolio_backtest
+          assert apply_funding_to_position and apply_mark_fact
+          assert PortfolioAuditor and PortfolioEngine and PortfolioRuntime
+          assert ResearchEventEngine
+          PY
       - run: pytest -q
-      - run: pip install pip-audit bandit
+      - run: python -m pip install pip-audit bandit
       - run: pip-audit
       - run: bandit -r src -x tests -ll
+
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: false
-          tags: crypto-quant:test
+      - run: docker build -t crypto-quant:test .
