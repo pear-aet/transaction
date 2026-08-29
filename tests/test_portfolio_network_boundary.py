@@ -25,10 +25,10 @@ BANNED_CALLS = {
 }
 
 
-def test_portfolio_modules_have_no_network_or_exchange_write_path() -> None:
+def test_portfolio_and_research_modules_have_no_network_or_exchange_write_path() -> None:
     root = Path("src/crypto_quant")
     violations: list[str] = []
-    paths = sorted(root.glob("portfolio*.py"))
+    paths = sorted({*root.glob("portfolio*.py"), *root.glob("research*.py")})
     assert paths
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
