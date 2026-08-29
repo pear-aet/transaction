@@ -16,9 +16,12 @@ on:
       - scripts/patch_portfolio_audit_integration.py
       - scripts/patch_portfolio_audit_hardening.py
       - scripts/patch_portfolio_snapshot_halt_reason.py
+      - scripts/patch_portfolio_runtime_audit_propagation.py
       - src/crypto_quant/portfolio_audit.py
       - tests/test_portfolio_audit.py
       - tests/test_portfolio_audit_integration.py
+      - tests/test_portfolio_runtime_audit.py
+      - tests/test_portfolio_network_boundary.py
 
 permissions:
   contents: write
@@ -59,6 +62,7 @@ jobs:
           python scripts/patch_portfolio_audit_integration.py
           python scripts/patch_portfolio_audit_hardening.py
           python scripts/patch_portfolio_snapshot_halt_reason.py
+          python scripts/patch_portfolio_runtime_audit_propagation.py
 
       - name: Format, lint and import smoke test
         run: |
@@ -97,7 +101,9 @@ jobs:
             tests/test_portfolio_engine.py \
             tests/test_portfolio_runtime.py \
             tests/test_portfolio_audit.py \
-            tests/test_portfolio_audit_integration.py
+            tests/test_portfolio_audit_integration.py \
+            tests/test_portfolio_runtime_audit.py \
+            tests/test_portfolio_network_boundary.py
 
       - name: Run complete project and security gates
         shell: bash
@@ -140,7 +146,8 @@ jobs:
             scripts/patch_portfolio_convergence.py \
             scripts/patch_portfolio_audit_integration.py \
             scripts/patch_portfolio_audit_hardening.py \
-            scripts/patch_portfolio_snapshot_halt_reason.py
+            scripts/patch_portfolio_snapshot_halt_reason.py \
+            scripts/patch_portfolio_runtime_audit_propagation.py
           rm -rf .validation
           git add -A src tests docs .github scripts .validation || true
           git config user.name "github-actions[bot]"
