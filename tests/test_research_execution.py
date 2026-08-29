@@ -5,6 +5,7 @@ import pytest
 from crypto_quant.config import StrategyConfig
 from crypto_quant.execution_contracts import (
     ExecutionCommandStatus,
+    ExecutionMode,
     ExecutionPolicy,
     OrderLegType,
     OrderState,
@@ -64,7 +65,7 @@ def factory() -> ResearchExecutionFactory:
     return ResearchExecutionFactory(
         StrategyConfig(initial_cash=10_000),
         execution_policy=ExecutionPolicy(
-            mode="simulation",
+            mode=ExecutionMode.SIMULATION,
             max_market_deviation=0.01,
         ),
     )
@@ -318,6 +319,6 @@ def test_cumulative_fill_updates_are_deterministic_and_exchange_safe() -> None:
     assert first.new_state is OrderState.PARTIALLY_FILLED
     assert full.new_state is OrderState.FILLED
     assert first.update_id != full.update_id
-    assert first.broker_order_id == replay.broker_order_id
+    assert first.broker_order_id == replay.broker_order_id == full.broker_order_id
     assert first.evidence["submitted"] is False
     assert first.evidence["network_write"] is False
