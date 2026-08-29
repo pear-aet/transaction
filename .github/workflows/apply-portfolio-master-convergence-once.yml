@@ -17,11 +17,13 @@ on:
       - scripts/patch_portfolio_audit_hardening.py
       - scripts/patch_portfolio_snapshot_halt_reason.py
       - scripts/patch_portfolio_runtime_audit_propagation.py
+      - scripts/patch_legacy_paper_boundary.py
       - src/crypto_quant/portfolio_audit.py
       - tests/test_portfolio_audit.py
       - tests/test_portfolio_audit_integration.py
       - tests/test_portfolio_runtime_audit.py
       - tests/test_portfolio_network_boundary.py
+      - tests/test_legacy_paper_boundary.py
 
 permissions:
   contents: write
@@ -63,6 +65,7 @@ jobs:
           python scripts/patch_portfolio_audit_hardening.py
           python scripts/patch_portfolio_snapshot_halt_reason.py
           python scripts/patch_portfolio_runtime_audit_propagation.py
+          python scripts/patch_legacy_paper_boundary.py
 
       - name: Format, lint and import smoke test
         run: |
@@ -72,6 +75,7 @@ jobs:
           ruff check src tests
           python -m compileall -q src
           python - <<'PY'
+          from crypto_quant.paper import LEGACY_PAPER_DISABLED
           from crypto_quant.portfolio_accounting import (
               apply_funding_to_position,
               apply_mark_fact,
@@ -81,6 +85,7 @@ jobs:
           from crypto_quant.portfolio_runtime import PortfolioRuntime
           from crypto_quant.portfolio_store import PortfolioStore
 
+          assert LEGACY_PAPER_DISABLED
           assert apply_funding_to_position
           assert apply_mark_fact
           assert PortfolioAuditor
@@ -103,7 +108,8 @@ jobs:
             tests/test_portfolio_audit.py \
             tests/test_portfolio_audit_integration.py \
             tests/test_portfolio_runtime_audit.py \
-            tests/test_portfolio_network_boundary.py
+            tests/test_portfolio_network_boundary.py \
+            tests/test_legacy_paper_boundary.py
 
       - name: Run complete project and security gates
         shell: bash
@@ -147,7 +153,8 @@ jobs:
             scripts/patch_portfolio_audit_integration.py \
             scripts/patch_portfolio_audit_hardening.py \
             scripts/patch_portfolio_snapshot_halt_reason.py \
-            scripts/patch_portfolio_runtime_audit_propagation.py
+            scripts/patch_portfolio_runtime_audit_propagation.py \
+            scripts/patch_legacy_paper_boundary.py
           rm -rf .validation
           git add -A src tests docs .github scripts .validation || true
           git config user.name "github-actions[bot]"
