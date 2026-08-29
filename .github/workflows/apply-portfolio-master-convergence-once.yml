@@ -6,6 +6,7 @@ on:
       - portfolio-account-engine-v1
     paths:
       - .github/workflows/apply-portfolio-master-convergence-once.yml
+      - scripts/normalize_portfolio_patch_idempotency.py
       - scripts/fix_portfolio_lifecycle_patch_indentation.py
       - scripts/patch_portfolio_lifecycle.py
       - scripts/patch_portfolio_lifecycle_failures.py
@@ -57,6 +58,7 @@ jobs:
 
       - name: Apply complete Portfolio dependency chain
         run: |
+          python scripts/normalize_portfolio_patch_idempotency.py
           python scripts/fix_portfolio_lifecycle_patch_indentation.py
           python scripts/patch_portfolio_lifecycle.py
           python scripts/patch_portfolio_lifecycle_failures.py
@@ -149,6 +151,7 @@ jobs:
           git rm -f --ignore-unmatch \
             .github/workflows/apply-portfolio-audit-once.yml \
             .github/workflows/apply-portfolio-master-convergence-once.yml \
+            scripts/normalize_portfolio_patch_idempotency.py \
             scripts/fix_portfolio_lifecycle_patch_indentation.py \
             scripts/patch_portfolio_lifecycle.py \
             scripts/patch_portfolio_lifecycle_failures.py \
