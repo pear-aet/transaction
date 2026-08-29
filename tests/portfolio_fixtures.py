@@ -94,7 +94,7 @@ def risk_decision(
             stop_price=position_stop_price,
         )
     account = AccountRiskSnapshot(
-        f"portfolio-account-{action.value}-{storage_sequence}",
+        f"portfolio-account-{action.value}",
         "paper",
         NOW,
         10_000,
@@ -106,7 +106,7 @@ def risk_decision(
         () if position is None else (position,),
     )
     market = MarketRiskSnapshot(
-        f"portfolio-risk-market-{action.value}-{storage_sequence}",
+        f"portfolio-risk-market-{action.value}",
         SYMBOL,
         NOW,
         position_mark_price if position is not None else 100,
@@ -133,7 +133,7 @@ def execution_command(decision=None):
             "execution-primary",
             selected,
             ExecutionMarketSnapshot(
-                f"portfolio-execution-market-{selected.storage_sequence}",
+                "portfolio-execution-market",
                 selected.symbol,
                 NOW,
                 100,
