@@ -15,57 +15,53 @@ def replace_once(path: Path, old: str, new: str) -> None:
 backtest = Path("src/crypto_quant/backtest.py")
 replace_once(
     backtest,
-    '''from .engine import EngineState, EventEngine, Trade, max_drawdown, safe_profit_factor
+    '''from .strategy import decide
 ''',
-    '''from .engine import EngineState, EventEngine, Trade, max_drawdown, safe_profit_factor
-from .research_engine import ResearchEventEngine
+    '''from .research_engine import ResearchEventEngine
+from .strategy import decide
 ''',
 )
 replace_once(
     backtest,
-    '''class PortfolioBacktestResult:
-    results: dict[str, BacktestResult]
-    aggregate: BacktestResult
-
-
-def run_backtest(
+    '''def _result(
+    state: EngineState,
 ''',
-    '''class PortfolioBacktestResult:
-    results: dict[str, BacktestResult]
-    aggregate: BacktestResult
-
-
-def _event_engine(
+    '''def _event_engine(
     config: StrategyConfig,
     *,
-    market_rules: dict[str, MarketRules] | None = None,
-    decision_function=None,
+    market_rules: dict[str, MarketRules] | None,
+    decision_function,
     accounting_mode: str,
 ) -> EventEngine:
+    selected_decision = decide if decision_function is None else decision_function
     if accounting_mode == "legacy":
         return EventEngine(
             config,
             market_rules=market_rules,
-            decision_function=decision_function,
+            decision_function=selected_decision,
         )
     if accounting_mode == "portfolio":
         return ResearchEventEngine(
             config,
             market_rules=market_rules,
-            decision_function=decision_function,
+            decision_function=selected_decision,
         )
     raise ValueError("accounting_mode must be 'legacy' or 'portfolio'")
 
 
-def run_backtest(
+def _result(
+    state: EngineState,
 ''',
 )
 replace_once(
     backtest,
-    '''    strategy_config: StrategyConfig | None = None,
+    '''    mark_candles: list[Candle] | None = None,
+    market_rules: MarketRules | None = None,
 ) -> BacktestResult:
 ''',
-    '''    strategy_config: StrategyConfig | None = None,
+    '''    mark_candles: list[Candle] | None = None,
+    market_rules: MarketRules | None = None,
+    *,
     accounting_mode: str = "legacy",
     decision_function=None,
 ) -> BacktestResult:
@@ -73,11 +69,11 @@ replace_once(
 )
 replace_once(
     backtest,
-    '''    engine = EventEngine(config, market_rules=market_rules)
+    '''    engine = EventEngine(config, market_rules=rules, decision_function=decide)
 ''',
     '''    engine = _event_engine(
         config,
-        market_rules=market_rules,
+        market_rules=rules,
         decision_function=decision_function,
         accounting_mode=accounting_mode,
     )
@@ -85,21 +81,24 @@ replace_once(
 )
 replace_once(
     backtest,
-    '''    strategy_configs: dict[str, StrategyConfig] | None = None,
-) -> PortfolioBacktestResult:
+    '''    marks_by_symbol: dict[str, list[Candle]] | None = None,
+    rules_by_symbol: dict[str, MarketRules] | None = None,
+) -> BacktestResult:
 ''',
-    '''    strategy_configs: dict[str, StrategyConfig] | None = None,
+    '''    marks_by_symbol: dict[str, list[Candle]] | None = None,
+    rules_by_symbol: dict[str, MarketRules] | None = None,
+    *,
     accounting_mode: str = "legacy",
     decision_function=None,
-) -> PortfolioBacktestResult:
+) -> BacktestResult:
 ''',
 )
 replace_once(
     backtest,
-    '''    engine = EventEngine(base_config, market_rules=rules_by_symbol)
+    '''    engine = EventEngine(base, market_rules=rules_by_symbol, decision_function=decide)
 ''',
     '''    engine = _event_engine(
-        base_config,
+        base,
         market_rules=rules_by_symbol,
         decision_function=decision_function,
         accounting_mode=accounting_mode,
@@ -110,32 +109,44 @@ replace_once(
 cli = Path("src/crypto_quant/cli.py")
 replace_once(
     cli,
-    '''        strategy_config,
-    )
+    '''    _print(run_backtest(low, high, config, funding, marks, rules).to_dict())
 ''',
-    '''        strategy_config,
-        accounting_mode=args.accounting_mode,
-    )
-''',
-)
-replace_once(
-    cli,
-    '''        rules,
-        strategy_configs,
-    )
-''',
-    '''        rules,
-        strategy_configs,
-        accounting_mode=args.accounting_mode,
+    '''    _print(
+        run_backtest(
+            low,
+            high,
+            config,
+            funding,
+            marks,
+            rules,
+            accounting_mode=args.accounting_mode,
+        ).to_dict()
     )
 ''',
 )
 replace_once(
     cli,
-    '''    backtest.add_argument("--strategy", action="append", default=[])
+    '''    _print(run_portfolio_backtest(lows, highs, configs, funding, marks, rules).to_dict())
+''',
+    '''    _print(
+        run_portfolio_backtest(
+            lows,
+            highs,
+            configs,
+            funding,
+            marks,
+            rules,
+            accounting_mode=args.accounting_mode,
+        ).to_dict()
+    )
+''',
+)
+replace_once(
+    cli,
+    '''    backtest = sub.add_parser("backtest", parents=[common])
     backtest.set_defaults(handler=command_backtest)
 ''',
-    '''    backtest.add_argument("--strategy", action="append", default=[])
+    '''    backtest = sub.add_parser("backtest", parents=[common])
     backtest.add_argument(
         "--accounting-mode",
         choices=("legacy", "portfolio"),
@@ -146,15 +157,15 @@ replace_once(
 )
 replace_once(
     cli,
-    '''    portfolio.add_argument("--strategy", action="append", default=[])
-    portfolio.set_defaults(handler=command_portfolio_backtest)
+    '''    portfolio_backtest.add_argument("--max-leverage", type=float, default=100)
+    portfolio_backtest.set_defaults(handler=command_portfolio_backtest)
 ''',
-    '''    portfolio.add_argument("--strategy", action="append", default=[])
-    portfolio.add_argument(
+    '''    portfolio_backtest.add_argument("--max-leverage", type=float, default=100)
+    portfolio_backtest.add_argument(
         "--accounting-mode",
         choices=("legacy", "portfolio"),
         default="legacy",
     )
-    portfolio.set_defaults(handler=command_portfolio_backtest)
+    portfolio_backtest.set_defaults(handler=command_portfolio_backtest)
 ''',
 )
