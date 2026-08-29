@@ -1,0 +1,146 @@
+name: Apply Portfolio Master Convergence Once
+
+on:
+  push:
+    branches:
+      - portfolio-account-engine-v1
+    paths:
+      - .github/workflows/apply-portfolio-master-convergence-once.yml
+      - scripts/fix_portfolio_lifecycle_patch_indentation.py
+      - scripts/patch_portfolio_lifecycle.py
+      - scripts/patch_portfolio_lifecycle_failures.py
+      - scripts/patch_portfolio_lifecycle_round4.py
+      - scripts/patch_portfolio_execution_events.py
+      - scripts/patch_portfolio_engine_boundaries.py
+      - scripts/patch_portfolio_convergence.py
+      - scripts/patch_portfolio_audit_integration.py
+      - scripts/patch_portfolio_audit_hardening.py
+      - src/crypto_quant/portfolio_audit.py
+      - tests/test_portfolio_audit.py
+      - tests/test_portfolio_audit_integration.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portfolio-master-convergence-once
+  cancel-in-progress: false
+
+jobs:
+  validate-and-materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: portfolio-account-engine-v1
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install project and quality tools
+        run: |
+          python -m pip install --quiet --upgrade pip "setuptools>=83"
+          pip install --quiet -e ".[dev]"
+          pip install --quiet pip-audit bandit
+
+      - name: Apply complete Portfolio dependency chain
+        run: |
+          python scripts/fix_portfolio_lifecycle_patch_indentation.py
+          python scripts/patch_portfolio_lifecycle.py
+          python scripts/patch_portfolio_lifecycle_failures.py
+          python scripts/patch_portfolio_lifecycle_round4.py
+          python scripts/patch_portfolio_execution_events.py
+          python scripts/patch_portfolio_engine_boundaries.py
+          python scripts/patch_portfolio_convergence.py
+          python scripts/patch_portfolio_audit_integration.py
+          python scripts/patch_portfolio_audit_hardening.py
+
+      - name: Format, lint and import smoke test
+        run: |
+          ruff format src tests
+          ruff check --fix src tests
+          ruff format src tests
+          ruff check src tests
+          python -m compileall -q src
+          python - <<'PY'
+          from crypto_quant.portfolio_accounting import (
+              apply_funding_to_position,
+              apply_mark_fact,
+          )
+          from crypto_quant.portfolio_audit import PortfolioAuditor
+          from crypto_quant.portfolio_engine import PortfolioEngine
+          from crypto_quant.portfolio_runtime import PortfolioRuntime
+          from crypto_quant.portfolio_store import PortfolioStore
+
+          assert apply_funding_to_position
+          assert apply_mark_fact
+          assert PortfolioAuditor
+          assert PortfolioEngine
+          assert PortfolioRuntime
+          assert PortfolioStore
+          PY
+
+      - name: Run Portfolio focused tests
+        run: |
+          pytest -q \
+            tests/test_portfolio_contracts.py \
+            tests/test_portfolio_accounting.py \
+            tests/test_portfolio_store.py \
+            tests/test_portfolio_lifecycle.py \
+            tests/test_portfolio_lifecycle_store.py \
+            tests/test_execution_store_scans.py \
+            tests/test_portfolio_engine.py \
+            tests/test_portfolio_runtime.py \
+            tests/test_portfolio_audit.py \
+            tests/test_portfolio_audit_integration.py
+
+      - name: Run complete project and security gates
+        shell: bash
+        run: |
+          set +e
+          {
+            pytest -q
+            pip-audit
+            bandit -r src -x tests -ll
+            docker build -t transaction:portfolio-convergence .
+          } > /tmp/portfolio-master.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/portfolio-master.log
+          if [ "$status" -ne 0 ]; then
+            mkdir -p .validation
+            tail -n 480 /tmp/portfolio-master.log > .validation/portfolio_master_failure.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .validation/portfolio_master_failure.txt
+            if ! git diff --cached --quiet; then
+              git commit -m "Record Portfolio master convergence failure"
+              git push origin HEAD:portfolio-account-engine-v1
+            fi
+            exit "$status"
+          fi
+
+      - name: Commit permanent implementation and remove one-shot machinery
+        run: |
+          git rm -f --ignore-unmatch \
+            .github/workflows/apply-portfolio-audit-once.yml \
+            .github/workflows/apply-portfolio-master-convergence-once.yml \
+            scripts/fix_portfolio_lifecycle_patch_indentation.py \
+            scripts/patch_portfolio_lifecycle.py \
+            scripts/patch_portfolio_lifecycle_failures.py \
+            scripts/patch_portfolio_lifecycle_round3.py \
+            scripts/patch_portfolio_lifecycle_round4.py \
+            scripts/patch_portfolio_execution_events.py \
+            scripts/patch_portfolio_engine_boundaries.py \
+            scripts/patch_portfolio_convergence.py \
+            scripts/patch_portfolio_audit_integration.py \
+            scripts/patch_portfolio_audit_hardening.py
+          rm -rf .validation
+          git add -A src tests docs .github scripts .validation || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Materialize authoritative Portfolio accounting and audit chain"
+          git push origin HEAD:portfolio-account-engine-v1
