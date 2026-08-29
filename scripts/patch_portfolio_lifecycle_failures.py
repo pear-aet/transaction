@@ -5,9 +5,12 @@ def replace_once(path: str, old: str, new: str) -> None:
     file = Path(path)
     text = file.read_text(encoding="utf-8")
     count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"expected one match in {path}, found {count}")
-    file.write_text(text.replace(old, new), encoding="utf-8")
+    if count == 1:
+        file.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if count == 0 and new in text:
+        return
+    raise SystemExit(f"expected one source or existing target in {path}, found {count}")
 
 
 replace_once(
@@ -34,15 +37,17 @@ replace_once(
 
 path = Path("tests/test_portfolio_lifecycle_store.py")
 text = path.read_text(encoding="utf-8")
-text = text.replace(
-    '''from crypto_quant.portfolio_accounting import (
+old_import = '''from crypto_quant.portfolio_accounting import (
     OrderAccountingCursor,
-''',
-    '''from crypto_quant.portfolio_accounting import (
+'''
+new_import = '''from crypto_quant.portfolio_accounting import (
     MarkAccountingResult,
     OrderAccountingCursor,
-''',
-)
+'''
+if old_import in text:
+    text = text.replace(old_import, new_import)
+elif new_import not in text:
+    raise SystemExit("Portfolio lifecycle store test import anchor is missing")
 old = '''    with pytest.raises(AccountStoreConflict, match="moved backwards|revision"):
         store.commit_mark(apply_mark_fact(first_funding.position, revision), policy)
 '''
@@ -50,6 +55,12 @@ new = '''    with pytest.raises(AccountStoreConflict, match="moved backwards|rev
         store.commit_mark(MarkAccountingResult(revision, None), policy)
 '''
 count = text.count(old)
-if count != 1:
-    raise SystemExit(f"expected one mark revision test match, found {count}")
-path.write_text(text.replace(old, new), encoding="utf-8")
+if count == 1:
+    text = text.replace(old, new)
+elif count == 0 and new in text:
+    pass
+else:
+    raise SystemExit(
+        f"expected one mark revision source or existing target, found {count}"
+    )
+path.write_text(text, encoding="utf-8")
