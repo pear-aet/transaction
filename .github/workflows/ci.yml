@@ -104,7 +104,7 @@ jobs:
           python -m pip install --upgrade pip "setuptools>=83"
           python -m pip install -e ".[dev]"
 
-      - name: Verify format, lint, imports and bytecode
+      - name: Import smoke test, format, lint and bytecode
         run: |
           ruff format --check src tests
           ruff check src tests
