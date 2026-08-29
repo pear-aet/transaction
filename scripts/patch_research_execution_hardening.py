@@ -26,11 +26,66 @@ replace_once(
 )
 replace_once(
     path,
+    '''        equity = account.equity
+        day_start = equity if day_start_equity is None else as_decimal(
+            day_start_equity,
+            "day_start_equity",
+        )
+        peak = max(
+            equity,
+            equity if peak_equity is None else as_decimal(peak_equity, "peak_equity"),
+        )
+''',
+    '''        equity = account.equity
+        day_start = (
+            max(Decimal("0"), equity)
+            if day_start_equity is None
+            else as_decimal(day_start_equity, "day_start_equity")
+        )
+        peak = max(
+            Decimal("0"),
+            equity,
+            equity if peak_equity is None else as_decimal(peak_equity, "peak_equity"),
+        )
+''',
+)
+replace_once(
+    path,
+    '''            positions=tuple(account.positions.values()),
+''',
+    '''            positions=tuple(
+                account.positions[symbol] for symbol in sorted(account.positions)
+            ),
+''',
+)
+replace_once(
+    path,
     '''            bid_price=(float(risk_mark) if buy else float(selected_execution)),
             ask_price=(float(selected_execution) if buy else float(risk_mark)),
 ''',
     '''            bid_price=None if buy else float(selected_execution),
             ask_price=float(selected_execution) if buy else None,
+''',
+)
+replace_once(
+    path,
+    '''        if quantity == 0:
+            if quote != 0:
+                raise ValueError("zero research fill cannot contain quote value")
+            state = OrderState.ACKNOWLEDGED
+            average = None
+        else:
+            if quote <= 0:
+                raise ValueError("positive research fill requires quote value")
+            complete = abs(quantity - requested) <= Decimal("0.000000000001")
+            state = OrderState.FILLED if complete else OrderState.PARTIALLY_FILLED
+            average = quote / quantity
+''',
+    '''        if quantity <= 0 or quote <= 0:
+            raise ValueError("research fill requires positive quantity and quote value")
+        complete = abs(quantity - requested) <= Decimal("0.000000000001")
+        state = OrderState.FILLED if complete else OrderState.PARTIALLY_FILLED
+        average = quote / quantity
 ''',
 )
 replace_once(
