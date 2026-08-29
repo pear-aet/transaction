@@ -111,14 +111,13 @@ def test_research_account_partial_open_and_close_use_cumulative_deltas() -> None
     assert closed_state is None
     assert len(account.closed_positions) == 1
     closed = account.closed_positions[0]
-    expected_realized = (
+    expected_realized = policy.quantize_money(
         first_quantity * (Decimal("99") - expected_entry)
-        + second_quantity * (Decimal("98") - expected_entry)
-    )
+    ) + policy.quantize_money(second_quantity * (Decimal("98") - expected_entry))
     assert closed.total_quantity == quantity
     assert closed.average_entry_price == expected_entry
     assert closed.average_exit_price == total_close_quote / quantity
-    assert closed.realized_pnl == policy.quantize_money(expected_realized)
+    assert closed.realized_pnl == expected_realized
     assert closed.opening_fees == total_open_fee
     assert closed.closing_fees == total_close_fee
 
