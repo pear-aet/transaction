@@ -6,7 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PATCH_CHAIN = (
+CORE_PATCH_CHAIN = (
     "scripts/normalize_portfolio_patch_idempotency.py",
     "scripts/fix_portfolio_lifecycle_patch_indentation.py",
     "scripts/patch_portfolio_lifecycle.py",
@@ -20,7 +20,6 @@ PATCH_CHAIN = (
     "scripts/patch_portfolio_snapshot_halt_reason.py",
     "scripts/patch_portfolio_funding_replay.py",
     "scripts/patch_portfolio_reservation_snapshot_boundaries.py",
-    "scripts/patch_portfolio_runtime_audit_propagation.py",
     "scripts/patch_legacy_paper_boundary.py",
     "scripts/patch_research_execution_hardening.py",
     "scripts/patch_research_trading_hardening.py",
@@ -29,16 +28,21 @@ PATCH_CHAIN = (
     "scripts/patch_backtest_authoritative_default.py",
 )
 
+FINALIZATION_PATCH = "scripts/patch_portfolio_runtime_audit_propagation.py"
+
 REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
     "src/crypto_quant/portfolio_contracts.py": (
         "cumulative_closed_quantity: Decimal = ZERO",
         "funding_pnl: Decimal = ZERO",
         "def total_opened_quantity(self) -> Decimal:",
+        "return max(ZERO, self.balances.cash + self.unrealized_pnl)",
     ),
     "src/crypto_quant/portfolio_accounting.py": (
         "def apply_funding_to_position(",
-        "def apply_mark_fact(",
-        "closed_position: ClosedPosition | None = None",
+        "transaction: JournalTransaction | None",
+        "actual-notional position margin",
+        "unplanned_margin: Decimal = ZERO",
+        "risk_overrun: Decimal = ZERO",
     ),
     "src/crypto_quant/portfolio_store.py": (
         "CREATE TABLE IF NOT EXISTS account_closed_positions",
@@ -58,6 +62,9 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "portfolio snapshot time cannot be in the future",
         "portfolio snapshot time precedes account state",
         "portfolio snapshot time moved backwards",
+        "now_ms=command.created_at",
+        "terminal_times = {",
+        "mark.observed_at != position.updated_at",
     ),
     "src/crypto_quant/portfolio_runtime.py": (
         "audit_findings: int = 0",
@@ -92,14 +99,27 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "def _maintenance_rate(",
         "research close fee_rate must be in [0, 0.1]",
     ),
-    "tests/portfolio_fixtures.py": (
-        'identity_suffix: str = ""',
+    "tests/portfolio_fixtures.py": ('identity_suffix: str = ""',),
+    "tests/test_portfolio_accounting.py": (
+        "def test_reservation_separates_initial_margin_from_fee_buffer(",
+        "def test_open_fill_uses_actual_notional_for_margin_and_risk(",
+    ),
+    "tests/test_portfolio_contracts.py": (
+        "def test_cross_margin_available_balance_includes_unrealized_pnl(",
     ),
     "tests/test_portfolio_engine.py": (
         "def test_funding_source_replay_is_idempotent_and_immutable(",
+        "def test_zero_funding_is_persisted_and_replayed_without_journal(",
         "def test_conflicting_entry_reservation_is_rejected_atomically(",
         "def test_future_snapshot_fails_closed_without_positions(",
         "def test_snapshot_cannot_precede_account_state_or_prior_snapshot(",
+        "def test_delayed_bootstrap_accounts_earlier_persisted_fills(",
+        "def test_reconciliation_findings_are_idempotent_across_cycles(",
+        "def test_external_cash_flows_rebase_equity_anchors(",
+        "def test_pre_position_mark_cannot_certify_new_exposure(",
+    ),
+    "tests/test_portfolio_lifecycle.py": (
+        "def test_zero_funding_advances_position_without_fake_journal(",
     ),
     "tests/test_portfolio_lifecycle_store.py": (
         "def test_store_rejects_second_active_entry_reservation(",
@@ -107,6 +127,8 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
     "tests/test_portfolio_store.py": (
         "def test_snapshot_time_is_monotonic_at_store_boundary(",
         "def test_account_instance_time_never_regresses_across_streams(",
+        "def test_cross_stream_journal_uses_storage_sequence_not_global_event_time(",
+        "def test_halted_account_still_accepts_external_economic_facts(",
     ),
     "tests/test_portfolio_runtime.py": (
         "def test_runtime_rejects_clock_rollback_before_processing(",
@@ -137,252 +159,6 @@ FINGERPRINT_ROOTS = (
 )
 
 
-def _replace_once(path: Path, old: str, new: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count == 1:
-        path.write_text(text.replace(old, new), encoding="utf-8")
-        return
-    if count == 0 and new in text:
-        return
-    raise SystemExit(
-        f"expected one temporal source or existing target in {path}, found {count}"
-    )
-
-
-def _replace_all(path: Path, old: str, new: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count > 0:
-        path.write_text(text.replace(old, new), encoding="utf-8")
-        return
-    if new in text:
-        return
-    raise SystemExit(f"temporal monotonicity anchor is missing in {path}")
-
-
-def _append_once(path: Path, marker: str, content: str) -> None:
-    text = path.read_text(encoding="utf-8")
-    if marker in text:
-        return
-    path.write_text(text.rstrip() + "\n\n" + content.lstrip("\n"), encoding="utf-8")
-
-
-def _apply_temporal_hardening(repo_root: Path) -> None:
-    store = repo_root / "src/crypto_quant/portfolio_store.py"
-    engine = repo_root / "src/crypto_quant/portfolio_engine.py"
-    runtime = repo_root / "src/crypto_quant/portfolio_runtime.py"
-    store_test = repo_root / "tests/test_portfolio_store.py"
-    engine_test = repo_root / "tests/test_portfolio_engine.py"
-    runtime_test = repo_root / "tests/test_portfolio_runtime.py"
-
-    _replace_all(
-        store,
-        '"UPDATE account_instances SET updated_at=? WHERE account_id=?"',
-        '"UPDATE account_instances SET updated_at=max(updated_at,?) WHERE account_id=?"',
-    )
-    _replace_once(
-        store,
-        '''                return SnapshotCommit(existing, True)
-            positions = self._positions_for_account(connection, snapshot.account_id)
-''',
-        '''                return SnapshotCommit(existing, True)
-            instance_row = connection.execute(
-                "SELECT * FROM account_instances WHERE account_id=?",
-                (snapshot.account_id,),
-            ).fetchone()
-            if instance_row is None:
-                raise KeyError(f"account not found: {snapshot.account_id}")
-            instance = self._instance_from_row(instance_row)
-            if snapshot.observed_at < instance.updated_at:
-                raise AccountStoreConflict("snapshot time precedes account state")
-            latest_row = connection.execute(
-                """SELECT * FROM account_snapshots
-                WHERE account_id=? ORDER BY observed_at DESC,storage_sequence DESC
-                LIMIT 1""",
-                (snapshot.account_id,),
-            ).fetchone()
-            if latest_row is not None:
-                latest = AccountSnapshot.from_dict(
-                    json.loads(str(latest_row["payload"]))
-                ).with_storage_sequence(int(latest_row["storage_sequence"]))
-                if snapshot.observed_at < latest.observed_at:
-                    raise AccountStoreConflict(
-                        "snapshot time moved behind the latest snapshot"
-                    )
-                if snapshot.observed_at == latest.observed_at:
-                    raise AccountStoreConflict(
-                        "same-time snapshot changed immutable account semantics"
-                    )
-            positions = self._positions_for_account(connection, snapshot.account_id)
-''',
-    )
-
-    _replace_once(
-        engine,
-        '''        if current > wall_now:
-            raise PortfolioHealthError("portfolio snapshot time cannot be in the future")
-        instance = self.store.load_instance(self.settings.account_id)
-        if instance is None:
-            raise PortfolioHealthError("portfolio account has not been initialized")
-        positions = tuple(self.store.list_positions(self.settings.account_id))
-''',
-        '''        if current > wall_now:
-            raise PortfolioHealthError("portfolio snapshot time cannot be in the future")
-        instance = self.store.load_instance(self.settings.account_id)
-        if instance is None:
-            raise PortfolioHealthError("portfolio account has not been initialized")
-        if current < instance.updated_at:
-            raise PortfolioHealthError("portfolio snapshot time precedes account state")
-        positions = tuple(self.store.list_positions(self.settings.account_id))
-''',
-    )
-    _replace_once(
-        engine,
-        '''        prior = self.store.latest_snapshot(self.settings.account_id)
-        balances = self.store.balances(self.settings.account_id)
-''',
-        '''        prior = self.store.latest_snapshot(self.settings.account_id)
-        if prior is not None and current < prior.observed_at:
-            raise PortfolioHealthError("portfolio snapshot time moved backwards")
-        balances = self.store.balances(self.settings.account_id)
-''',
-    )
-
-    _replace_once(
-        runtime,
-        '''        async with self._cycle_lock:
-            try:
-                bootstrap = await asyncio.to_thread(
-''',
-        '''        async with self._cycle_lock:
-            try:
-                if (
-                    self.health.last_cycle_at_ms is not None
-                    and current < self.health.last_cycle_at_ms
-                ):
-                    raise ValueError("portfolio runtime clock moved backwards")
-                bootstrap = await asyncio.to_thread(
-''',
-    )
-
-    _append_once(
-        store_test,
-        "def test_snapshot_time_is_monotonic_at_store_boundary(",
-        '''def test_snapshot_time_is_monotonic_at_store_boundary(tmp_path) -> None:
-    store, _, initialized = initialize_store(tmp_path)
-    first = build_account_snapshot(
-        account_id="paper",
-        observed_at=NOW + 2,
-        balances=initialized.balances,
-        positions=(),
-        day_start_equity=initialized.balances.settled_assets,
-        peak_equity=initialized.balances.settled_assets,
-        consecutive_losses=0,
-        watermarks=AccountWatermarks(),
-    )
-    committed = store.commit_snapshot(first)
-
-    regressed = build_account_snapshot(
-        account_id="paper",
-        observed_at=NOW + 1,
-        balances=initialized.balances,
-        positions=(),
-        day_start_equity=initialized.balances.settled_assets,
-        peak_equity=initialized.balances.settled_assets,
-        consecutive_losses=0,
-        watermarks=AccountWatermarks(),
-    )
-    with pytest.raises(AccountStoreConflict, match="latest snapshot"):
-        store.commit_snapshot(regressed)
-
-    assert store.latest_snapshot("paper") == committed.snapshot
-
-
-def test_account_instance_time_never_regresses_across_streams(tmp_path) -> None:
-    from crypto_quant.portfolio_accounting import MarkAccountingResult
-    from crypto_quant.portfolio_facts import make_mark_price_fact
-
-    store, policy, _ = initialize_store(tmp_path)
-    fact = make_mark_price_fact(
-        account_id="paper",
-        source_event_id="flat-mark-ahead-of-cash-flow",
-        symbol="ETH/USDT:USDT",
-        observed_at=NOW + 2,
-        source_sequence=1,
-        mark_price=50,
-    )
-    store.commit_mark(MarkAccountingResult(fact, None), policy)
-    deposit = deposit_transaction(
-        account_id="paper",
-        amount="1",
-        event_time=NOW + 1,
-        source_id="deposit-after-later-mark",
-        policy=policy,
-    )
-    store.apply_external_transaction(deposit, policy)
-
-    instance = store.load_instance("paper")
-    assert instance is not None
-    assert instance.updated_at == NOW + 2
-''',
-    )
-
-    _append_once(
-        engine_test,
-        "def test_snapshot_cannot_precede_account_state_or_prior_snapshot(",
-        '''def test_snapshot_cannot_precede_account_state_or_prior_snapshot(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    engine, _, _, _, portfolio_store, _, _ = system(tmp_path)
-    monkeypatch.setattr(
-        "crypto_quant.portfolio_engine.time.time",
-        lambda: (NOW + 100) / 1000,
-    )
-    engine.apply_mark(
-        source_event_id="flat-account-temporal-mark",
-        symbol="ETH/USDT:USDT",
-        observed_at=NOW + 2,
-        source_sequence=1,
-        mark_price=50,
-    )
-
-    with pytest.raises(PortfolioHealthError, match="precedes account state"):
-        engine.snapshot(observed_at=NOW + 1)
-
-    first = engine.snapshot(observed_at=NOW + 3)
-    with pytest.raises(PortfolioHealthError, match="moved backwards"):
-        engine.snapshot(observed_at=NOW + 2)
-
-    assert portfolio_store.latest_snapshot("paper") == first
-''',
-    )
-
-    _append_once(
-        runtime_test,
-        "def test_runtime_rejects_clock_rollback_before_processing(",
-        '''def test_runtime_rejects_clock_rollback_before_processing(tmp_path) -> None:
-    engine, _, portfolio_store, _ = runtime_system(tmp_path)
-    runtime = PortfolioRuntime(
-        engine,
-        PortfolioRuntimeSettings(snapshot_interval_ms=0),
-        clock=lambda: NOW + 3,
-    )
-    asyncio.run(runtime.run_once())
-    journal_count = portfolio_store.metrics("paper")["journal_transactions"]
-    cycles = runtime.health.cycles
-
-    with pytest.raises(ValueError, match="clock moved backwards"):
-        asyncio.run(runtime.run_once(now_ms=NOW + 2))
-
-    assert runtime.health.cycles == cycles
-    assert runtime.health.failures == 1
-    assert portfolio_store.metrics("paper")["journal_transactions"] == journal_count
-''',
-    )
-
-
 def _run_patch(repo_root: Path, relative: str) -> None:
     script = repo_root / relative
     if not script.is_file():
@@ -403,6 +179,29 @@ def _fingerprint(repo_root: Path) -> dict[str, str]:
             relative = path.relative_to(repo_root).as_posix()
             result[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     return result
+
+
+def _changed_paths(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    paths = sorted(set(before) | set(after))
+    return [path for path in paths if before.get(path) != after.get(path)]
+
+
+def _run_idempotency_stage(
+    repo_root: Path,
+    scripts: tuple[str, ...],
+    stage_name: str,
+) -> None:
+    for relative in scripts:
+        _run_patch(repo_root, relative)
+    first = _fingerprint(repo_root)
+    for relative in scripts:
+        _run_patch(repo_root, relative)
+    second = _fingerprint(repo_root)
+    changed = _changed_paths(first, second)
+    if changed:
+        raise SystemExit(
+            f"portfolio {stage_name} is not idempotent:\n- " + "\n- ".join(changed)
+        )
 
 
 def _verify_markers(repo_root: Path) -> None:
@@ -430,23 +229,13 @@ def _verify_markers(repo_root: Path) -> None:
 
 
 def _validate_patch_chain(repo_root: Path, *, verify_idempotency: bool) -> None:
-    for relative in PATCH_CHAIN:
-        _run_patch(repo_root, relative)
-    _apply_temporal_hardening(repo_root)
-    if not verify_idempotency:
-        return
-    first = _fingerprint(repo_root)
-    for relative in PATCH_CHAIN:
-        _run_patch(repo_root, relative)
-    _apply_temporal_hardening(repo_root)
-    second = _fingerprint(repo_root)
-    changed = sorted(set(first) | set(second))
-    changed = [path for path in changed if first.get(path) != second.get(path)]
-    if changed:
-        raise SystemExit(
-            "portfolio convergence patch chain is not idempotent:\n- "
-            + "\n- ".join(changed)
-        )
+    if verify_idempotency:
+        _run_idempotency_stage(repo_root, CORE_PATCH_CHAIN, "core patch chain")
+        _run_idempotency_stage(repo_root, (FINALIZATION_PATCH,), "finalization patch")
+    else:
+        for relative in CORE_PATCH_CHAIN:
+            _run_patch(repo_root, relative)
+        _run_patch(repo_root, FINALIZATION_PATCH)
 
 
 def main() -> None:
@@ -462,7 +251,7 @@ def main() -> None:
     parser.add_argument(
         "--single-pass",
         action="store_true",
-        help="skip the second idempotency pass (not allowed in acceptance workflows)",
+        help="skip second-pass idempotency checks (not allowed in acceptance workflows)",
     )
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
