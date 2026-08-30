@@ -13,6 +13,7 @@ def replace_once(path: str, old: str, new: str) -> None:
 RUNTIME = "src/crypto_quant/portfolio_runtime.py"
 STORE = "src/crypto_quant/portfolio_store.py"
 ENGINE = "src/crypto_quant/portfolio_engine.py"
+ACCOUNTING = "src/crypto_quant/portfolio_accounting.py"
 ENGINE_TEST = "tests/test_portfolio_engine.py"
 LIFECYCLE_TEST = "tests/test_portfolio_lifecycle.py"
 
@@ -24,6 +25,18 @@ from dataclasses import dataclass
     '''import threading
 from dataclasses import dataclass
 from decimal import Decimal
+''',
+)
+
+replace_once(
+    ACCOUNTING,
+    '''    initial_risk_after = max(ZERO, approved_risk_after + price_risk_adjustment)
+    initial_risk_before = ZERO if position is None else position.initial_risk
+    initial_risk_delta = initial_risk_after - initial_risk_before
+    risk_overrun = max(ZERO, initial_risk_after - approved_risk_after)
+''',
+    '''    initial_risk_after = max(ZERO, approved_risk_after + price_risk_adjustment)
+    risk_overrun = max(ZERO, initial_risk_after - approved_risk_after)
 ''',
 )
 
