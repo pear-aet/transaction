@@ -202,7 +202,7 @@ append_once(
 
     assert opened.position is not None
     assert opened.position.position_margin == expected_initial_margin
-    assert opened.reservation.command_margin_remaining == ZERO
+    assert opened.reservation.command_margin_remaining == Decimal("0")
     assert opened.reservation.fee_reserve_remaining == (
         plan.reservation.fee_reserve_total - fee
     )
