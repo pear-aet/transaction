@@ -14,6 +14,13 @@ def replace_once(path: Path, old: str, new: str) -> None:
     )
 
 
+def append_once(path: Path, marker: str, content: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    if marker in text:
+        return
+    path.write_text(text.rstrip() + "\n\n" + content.lstrip("\n"), encoding="utf-8")
+
+
 path = Path("src/crypto_quant/portfolio_engine.py")
 replace_once(
     path,
@@ -38,6 +45,49 @@ replace_once(
 )
 replace_once(
     path,
+    '''        balances = self.store.balances(self.settings.account_id)
+        provisional = build_account_snapshot(
+''',
+    '''        balances = self.store.balances(self.settings.account_id)
+        if prior is None:
+            adjusted_day_start = balances.settled_assets
+            adjusted_peak = balances.settled_assets
+        else:
+            external_capital_delta = (
+                balances.external_capital - prior.balances.external_capital
+            )
+            adjusted_day_start = (
+                prior.day_start_equity + external_capital_delta
+                if self._utc_day(prior.observed_at) == self._utc_day(current)
+                else prior.equity + external_capital_delta
+            )
+            adjusted_peak = prior.peak_equity + external_capital_delta
+            if adjusted_day_start < ZERO or adjusted_peak < ZERO:
+                raise PortfolioHealthError(
+                    "external cash flow made Portfolio equity anchors negative"
+                )
+        provisional = build_account_snapshot(
+''',
+)
+replace_once(
+    path,
+    '''            day_start_equity=(
+                balances.settled_assets
+                if prior is None
+                else (
+                    prior.day_start_equity
+                    if self._utc_day(prior.observed_at) == self._utc_day(current)
+                    else prior.equity
+                )
+            ),
+            peak_equity=(balances.settled_assets if prior is None else prior.peak_equity),
+''',
+    '''            day_start_equity=adjusted_day_start,
+            peak_equity=adjusted_peak,
+''',
+)
+replace_once(
+    path,
     '''        self.health.last_snapshot_id = commit.snapshot.snapshot_id
         self.health.last_error = None
         return commit.snapshot
@@ -51,5 +101,59 @@ replace_once(
         else:
             self.health.last_error = None
         return commit.snapshot
+''',
+)
+
+append_once(
+    Path("tests/test_portfolio_engine.py"),
+    "def test_external_cash_flows_rebase_equity_anchors(",
+    '''def test_external_cash_flows_rebase_equity_anchors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from crypto_quant.portfolio_accounting import (
+        deposit_transaction,
+        withdrawal_transaction,
+    )
+
+    engine, _, _, _, portfolio_store, _, _ = system(tmp_path)
+    monkeypatch.setattr(
+        "crypto_quant.portfolio_engine.time.time",
+        lambda: (NOW + 100) / 1000,
+    )
+
+    initial = engine.snapshot(observed_at=NOW)
+    deposit = deposit_transaction(
+        account_id="paper",
+        amount="500",
+        event_time=NOW + 1,
+        source_id="equity-anchor-deposit",
+        policy=engine.policy,
+    )
+    portfolio_store.apply_external_transaction(deposit, engine.policy)
+    after_deposit = engine.snapshot(observed_at=NOW + 1)
+
+    assert after_deposit.equity == initial.equity + Decimal("500")
+    assert after_deposit.day_start_equity == initial.day_start_equity + Decimal("500")
+    assert after_deposit.peak_equity == initial.peak_equity + Decimal("500")
+
+    withdrawal = withdrawal_transaction(
+        account_id="paper",
+        amount="250",
+        event_time=NOW + 2,
+        source_id="equity-anchor-withdrawal",
+        policy=engine.policy,
+    )
+    portfolio_store.apply_external_transaction(withdrawal, engine.policy)
+    after_withdrawal = engine.snapshot(observed_at=NOW + 2)
+
+    assert after_withdrawal.equity == after_deposit.equity - Decimal("250")
+    assert (
+        after_withdrawal.day_start_equity
+        == after_deposit.day_start_equity - Decimal("250")
+    )
+    assert after_withdrawal.peak_equity == after_deposit.peak_equity - Decimal("250")
+    assert after_withdrawal.equity == after_withdrawal.day_start_equity
+    assert after_withdrawal.equity == after_withdrawal.peak_equity
 ''',
 )
