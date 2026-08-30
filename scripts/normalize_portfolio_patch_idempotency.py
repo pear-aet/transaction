@@ -28,7 +28,6 @@ FILES = (
     "scripts/patch_portfolio_engine_boundaries.py",
     "scripts/patch_portfolio_convergence.py",
     "scripts/patch_portfolio_audit_integration.py",
-    "scripts/patch_portfolio_runtime_audit_propagation.py",
     "scripts/patch_legacy_paper_boundary.py",
 )
 
@@ -41,6 +40,20 @@ for name in FILES:
     if count != 1:
         raise SystemExit(f"expected one replace_once helper in {name}, found {count}")
     path.write_text(text.replace(STANDARD, IDEMPOTENT), encoding="utf-8")
+
+# patch_portfolio_runtime_audit_propagation.py intentionally owns a richer
+# idempotent helper set (replace_once, replace_all and append_once). It is a
+# separate finalization stage and must not be rewritten by this normalizer.
+finalization = Path("scripts/patch_portfolio_runtime_audit_propagation.py")
+finalization_text = finalization.read_text(encoding="utf-8")
+for marker in (
+    "def replace_once(path: str, old: str, new: str) -> None:",
+    "if count == 0 and new in text:",
+    "def replace_all(path: str, old: str, new: str) -> None:",
+    "def append_once(path: str, marker: str, content: str) -> None:",
+):
+    if marker not in finalization_text:
+        raise SystemExit(f"Portfolio finalization helper is missing marker: {marker}")
 
 round4 = Path("scripts/patch_portfolio_lifecycle_round4.py")
 text = round4.read_text(encoding="utf-8")
