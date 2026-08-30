@@ -1,1 +1,0 @@
-Trigger deterministic Portfolio convergence validation after GitHub Actions budget was restored.

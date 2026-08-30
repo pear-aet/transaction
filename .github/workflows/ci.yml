@@ -3,9 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
 
 env:
   PORTFOLIO_BRANCH: portfolio-account-engine-v1
@@ -33,7 +38,7 @@ jobs:
           python -m pip install -e ".[dev]"
 
       - id: mode
-        name: Materialize staged Portfolio source when required
+        name: Produce the exact permanent Portfolio source
         run: |
           if test -f scripts/materialize_portfolio_convergence.py; then
             echo "materialization_required=true" >> "$GITHUB_OUTPUT"
@@ -41,15 +46,79 @@ jobs:
             ruff format src tests
             ruff check --fix src tests
             ruff format src tests
+            python scripts/materialize_portfolio_convergence.py --verify-only
+
+            rm -f \
+              .github/workflows/apply-portfolio-audit-once.yml \
+              .github/workflows/apply-portfolio-master-convergence-once.yml \
+              scripts/materialize_portfolio_convergence.py \
+              scripts/normalize_portfolio_patch_idempotency.py \
+              scripts/fix_portfolio_lifecycle_patch_indentation.py \
+              scripts/patch_portfolio_lifecycle.py \
+              scripts/patch_portfolio_lifecycle_failures.py \
+              scripts/patch_portfolio_lifecycle_round3.py \
+              scripts/patch_portfolio_lifecycle_round4.py \
+              scripts/patch_portfolio_execution_events.py \
+              scripts/patch_portfolio_engine_boundaries.py \
+              scripts/patch_portfolio_convergence.py \
+              scripts/patch_portfolio_audit_integration.py \
+              scripts/patch_portfolio_audit_hardening.py \
+              scripts/patch_portfolio_snapshot_halt_reason.py \
+              scripts/patch_portfolio_funding_replay.py \
+              scripts/patch_portfolio_reservation_snapshot_boundaries.py \
+              scripts/patch_portfolio_runtime_audit_propagation.py \
+              scripts/patch_legacy_paper_boundary.py \
+              scripts/patch_research_execution_hardening.py \
+              scripts/patch_research_trading_hardening.py \
+              scripts/patch_research_engine_projection.py \
+              scripts/patch_backtest_accounting_mode.py \
+              scripts/patch_backtest_authoritative_default.py
+            rm -rf .validation .github/ci-trigger
           else
             echo "materialization_required=false" >> "$GITHUB_OUTPUT"
           fi
+
           ruff format --check src tests
           ruff check src tests
           python -m compileall -q src
           git diff --check
 
-      - name: Package one exact source image for every required gate
+      - name: Prove one-shot convergence machinery is absent
+        run: |
+          for path in \
+            .github/workflows/apply-portfolio-audit-once.yml \
+            .github/workflows/apply-portfolio-master-convergence-once.yml \
+            scripts/materialize_portfolio_convergence.py \
+            scripts/normalize_portfolio_patch_idempotency.py \
+            scripts/fix_portfolio_lifecycle_patch_indentation.py \
+            scripts/patch_portfolio_lifecycle.py \
+            scripts/patch_portfolio_lifecycle_failures.py \
+            scripts/patch_portfolio_lifecycle_round3.py \
+            scripts/patch_portfolio_lifecycle_round4.py \
+            scripts/patch_portfolio_execution_events.py \
+            scripts/patch_portfolio_engine_boundaries.py \
+            scripts/patch_portfolio_convergence.py \
+            scripts/patch_portfolio_audit_integration.py \
+            scripts/patch_portfolio_audit_hardening.py \
+            scripts/patch_portfolio_snapshot_halt_reason.py \
+            scripts/patch_portfolio_funding_replay.py \
+            scripts/patch_portfolio_reservation_snapshot_boundaries.py \
+            scripts/patch_portfolio_runtime_audit_propagation.py \
+            scripts/patch_legacy_paper_boundary.py \
+            scripts/patch_research_execution_hardening.py \
+            scripts/patch_research_trading_hardening.py \
+            scripts/patch_research_engine_projection.py \
+            scripts/patch_backtest_accounting_mode.py \
+            scripts/patch_backtest_authoritative_default.py
+          do
+            if test -e "$path"; then
+              echo "one-shot path remains in permanent source: $path" >&2
+              exit 1
+            fi
+          done
+          test ! -e .github/ci-trigger
+
+      - name: Package one exact permanent source image for every gate
         run: |
           mkdir -p "$RUNNER_TEMP/verified-source"
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/verified-source/source-sha.txt"
@@ -64,8 +133,8 @@ jobs:
             --exclude='*.pyc' \
             --exclude='*.egg-info' \
             -czf "$RUNNER_TEMP/verified-source/source.tgz" .
-          sha256sum "$RUNNER_TEMP/verified-source/source.tgz" \
-            > "$RUNNER_TEMP/verified-source/source.sha256"
+          cd "$RUNNER_TEMP/verified-source"
+          sha256sum source.tgz > source.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -87,7 +156,7 @@ jobs:
           name: ${{ env.SOURCE_ARTIFACT }}
           path: ${{ runner.temp }}/verified-source
 
-      - name: Restore and authenticate the prepared source
+      - name: Restore and authenticate the permanent source
         run: |
           test "$(cat "$RUNNER_TEMP/verified-source/source-sha.txt")" = "$GITHUB_SHA"
           cd "$RUNNER_TEMP/verified-source"
@@ -99,7 +168,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install the prepared source
+      - name: Install the permanent source
         run: |
           python -m pip install --upgrade pip "setuptools>=83"
           python -m pip install -e ".[dev]"
@@ -167,7 +236,7 @@ jobs:
           name: ${{ env.SOURCE_ARTIFACT }}
           path: ${{ runner.temp }}/verified-source
 
-      - name: Restore and authenticate the prepared source
+      - name: Restore and authenticate the permanent source
         run: |
           test "$(cat "$RUNNER_TEMP/verified-source/source-sha.txt")" = "$GITHUB_SHA"
           cd "$RUNNER_TEMP/verified-source"
@@ -199,7 +268,7 @@ jobs:
           name: ${{ env.SOURCE_ARTIFACT }}
           path: ${{ runner.temp }}/verified-source
 
-      - name: Restore and authenticate the prepared source
+      - name: Restore and authenticate the permanent source
         run: |
           test "$(cat "$RUNNER_TEMP/verified-source/source-sha.txt")" = "$GITHUB_SHA"
           cd "$RUNNER_TEMP/verified-source"
@@ -234,49 +303,21 @@ jobs:
           name: ${{ env.SOURCE_ARTIFACT }}
           path: ${{ runner.temp }}/verified-source
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Restore the exact source image that passed every gate
+      - name: Restore the exact permanent source image that passed every gate
         run: |
           test "$(cat "$RUNNER_TEMP/verified-source/source-sha.txt")" = "$GITHUB_SHA"
           test "$(cat "$RUNNER_TEMP/verified-source/materialization-required.txt")" = "true"
           cd "$RUNNER_TEMP/verified-source"
           sha256sum -c source.sha256
+          find "$GITHUB_WORKSPACE" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           tar -xzf source.tgz -C "$GITHUB_WORKSPACE"
           cd "$GITHUB_WORKSPACE"
-          python scripts/materialize_portfolio_convergence.py --verify-only
+          test ! -e scripts/materialize_portfolio_convergence.py
+          test ! -e .github/workflows/apply-portfolio-master-convergence-once.yml
+          test ! -e .github/ci-trigger
           git diff --check
 
-      - name: Remove all one-shot convergence machinery
-        run: |
-          git rm -f --ignore-unmatch \
-            .github/workflows/apply-portfolio-audit-once.yml \
-            .github/workflows/apply-portfolio-master-convergence-once.yml \
-            scripts/materialize_portfolio_convergence.py \
-            scripts/normalize_portfolio_patch_idempotency.py \
-            scripts/fix_portfolio_lifecycle_patch_indentation.py \
-            scripts/patch_portfolio_lifecycle.py \
-            scripts/patch_portfolio_lifecycle_failures.py \
-            scripts/patch_portfolio_lifecycle_round3.py \
-            scripts/patch_portfolio_lifecycle_round4.py \
-            scripts/patch_portfolio_execution_events.py \
-            scripts/patch_portfolio_engine_boundaries.py \
-            scripts/patch_portfolio_convergence.py \
-            scripts/patch_portfolio_audit_integration.py \
-            scripts/patch_portfolio_audit_hardening.py \
-            scripts/patch_portfolio_snapshot_halt_reason.py \
-            scripts/patch_portfolio_runtime_audit_propagation.py \
-            scripts/patch_legacy_paper_boundary.py \
-            scripts/patch_research_execution_hardening.py \
-            scripts/patch_research_trading_hardening.py \
-            scripts/patch_research_engine_projection.py \
-            scripts/patch_backtest_accounting_mode.py \
-            scripts/patch_backtest_authoritative_default.py
-          rm -rf .validation
-
-      - name: Commit only the source image that passed the gates
+      - name: Commit only the exact permanent source image
         run: |
           git add -A
           git diff --cached --check

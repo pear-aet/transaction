@@ -18,6 +18,8 @@ PATCH_CHAIN = (
     "scripts/patch_portfolio_audit_integration.py",
     "scripts/patch_portfolio_audit_hardening.py",
     "scripts/patch_portfolio_snapshot_halt_reason.py",
+    "scripts/patch_portfolio_funding_replay.py",
+    "scripts/patch_portfolio_reservation_snapshot_boundaries.py",
     "scripts/patch_portfolio_runtime_audit_propagation.py",
     "scripts/patch_legacy_paper_boundary.py",
     "scripts/patch_research_execution_hardening.py",
@@ -43,11 +45,15 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "CREATE TABLE IF NOT EXISTS account_execution_command_events",
         "CREATE TABLE IF NOT EXISTS account_execution_update_events",
         "def commit_finding(",
+        "def load_funding_commit(",
+        "def _assert_entry_reservation_available(",
     ),
     "src/crypto_quant/portfolio_engine.py": (
         "def _assert_initialized(self, *, require_active: bool = True) -> None:",
         "def audit_materialized_state(",
         "audit_findings=len(audit.findings)",
+        "funding source changed immutable semantics",
+        "portfolio snapshot time cannot be in the future",
     ),
     "src/crypto_quant/portfolio_runtime.py": (
         "audit_findings: int = 0",
@@ -81,35 +87,40 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "def _maintenance_rate(",
         "research close fee_rate must be in [0, 0.1]",
     ),
-    ".github/workflows/apply-portfolio-master-convergence-once.yml": (
-        "actions/upload-artifact@v4",
-        "actions/download-artifact@v4",
-        "needs: [prepare, validate, security, docker]",
-        "sha256sum -c materialized-source.sha256",
-        "git add -A",
+    "tests/portfolio_fixtures.py": (
+        'identity_suffix: str = ""',
+    ),
+    "tests/test_portfolio_engine.py": (
+        "def test_funding_source_replay_is_idempotent_and_immutable(",
+        "def test_conflicting_entry_reservation_is_rejected_atomically(",
+        "def test_future_snapshot_fails_closed_without_positions(",
+    ),
+    "tests/test_portfolio_lifecycle_store.py": (
+        "def test_store_rejects_second_active_entry_reservation(",
     ),
     ".github/workflows/ci.yml": (
         "runs-on: ubuntu-24.04",
         "Import smoke test",
         "python -m compileall -q src",
+        "Produce the exact permanent Portfolio source",
+        "find \"$GITHUB_WORKSPACE\"",
     ),
 }
 
 FORBIDDEN_MARKERS: dict[str, tuple[str, ...]] = {
     "src/crypto_quant/backtest.py": ('accounting_mode: str = "legacy"',),
-    ".github/workflows/apply-portfolio-master-convergence-once.yml": (
-        "set +e",
-        "status=$?",
+    ".github/workflows/ci.yml": (
         "ubuntu-latest",
+        "set +e",
         "|| true",
     ),
-    ".github/workflows/ci.yml": ("ubuntu-latest",),
 }
 
 FINGERPRINT_ROOTS = (
     "src/crypto_quant",
     "tests",
     "scripts",
+    ".github/workflows",
 )
 
 
