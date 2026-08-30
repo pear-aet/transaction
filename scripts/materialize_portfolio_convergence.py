@@ -47,6 +47,8 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "def commit_finding(",
         "def load_funding_commit(",
         "def _assert_entry_reservation_available(",
+        "snapshot time moved behind the latest snapshot",
+        "updated_at=max(updated_at,?)",
     ),
     "src/crypto_quant/portfolio_engine.py": (
         "def _assert_initialized(self, *, require_active: bool = True) -> None:",
@@ -54,10 +56,13 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "audit_findings=len(audit.findings)",
         "funding source changed immutable semantics",
         "portfolio snapshot time cannot be in the future",
+        "portfolio snapshot time precedes account state",
+        "portfolio snapshot time moved backwards",
     ),
     "src/crypto_quant/portfolio_runtime.py": (
         "audit_findings: int = 0",
         "bootstrap.audit_findings",
+        "portfolio runtime clock moved backwards",
     ),
     "src/crypto_quant/paper.py": (
         "LEGACY_PAPER_DISABLED",
@@ -94,9 +99,17 @@ REQUIRED_MARKERS: dict[str, tuple[str, ...]] = {
         "def test_funding_source_replay_is_idempotent_and_immutable(",
         "def test_conflicting_entry_reservation_is_rejected_atomically(",
         "def test_future_snapshot_fails_closed_without_positions(",
+        "def test_snapshot_cannot_precede_account_state_or_prior_snapshot(",
     ),
     "tests/test_portfolio_lifecycle_store.py": (
         "def test_store_rejects_second_active_entry_reservation(",
+    ),
+    "tests/test_portfolio_store.py": (
+        "def test_snapshot_time_is_monotonic_at_store_boundary(",
+        "def test_account_instance_time_never_regresses_across_streams(",
+    ),
+    "tests/test_portfolio_runtime.py": (
+        "def test_runtime_rejects_clock_rollback_before_processing(",
     ),
     ".github/workflows/ci.yml": (
         "runs-on: ubuntu-24.04",
@@ -122,6 +135,252 @@ FINGERPRINT_ROOTS = (
     "scripts",
     ".github/workflows",
 )
+
+
+def _replace_once(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == 1:
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if count == 0 and new in text:
+        return
+    raise SystemExit(
+        f"expected one temporal source or existing target in {path}, found {count}"
+    )
+
+
+def _replace_all(path: Path, old: str, new: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count > 0:
+        path.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if new in text:
+        return
+    raise SystemExit(f"temporal monotonicity anchor is missing in {path}")
+
+
+def _append_once(path: Path, marker: str, content: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    if marker in text:
+        return
+    path.write_text(text.rstrip() + "\n\n" + content.lstrip("\n"), encoding="utf-8")
+
+
+def _apply_temporal_hardening(repo_root: Path) -> None:
+    store = repo_root / "src/crypto_quant/portfolio_store.py"
+    engine = repo_root / "src/crypto_quant/portfolio_engine.py"
+    runtime = repo_root / "src/crypto_quant/portfolio_runtime.py"
+    store_test = repo_root / "tests/test_portfolio_store.py"
+    engine_test = repo_root / "tests/test_portfolio_engine.py"
+    runtime_test = repo_root / "tests/test_portfolio_runtime.py"
+
+    _replace_all(
+        store,
+        '"UPDATE account_instances SET updated_at=? WHERE account_id=?"',
+        '"UPDATE account_instances SET updated_at=max(updated_at,?) WHERE account_id=?"',
+    )
+    _replace_once(
+        store,
+        '''                return SnapshotCommit(existing, True)
+            positions = self._positions_for_account(connection, snapshot.account_id)
+''',
+        '''                return SnapshotCommit(existing, True)
+            instance_row = connection.execute(
+                "SELECT * FROM account_instances WHERE account_id=?",
+                (snapshot.account_id,),
+            ).fetchone()
+            if instance_row is None:
+                raise KeyError(f"account not found: {snapshot.account_id}")
+            instance = self._instance_from_row(instance_row)
+            if snapshot.observed_at < instance.updated_at:
+                raise AccountStoreConflict("snapshot time precedes account state")
+            latest_row = connection.execute(
+                """SELECT * FROM account_snapshots
+                WHERE account_id=? ORDER BY observed_at DESC,storage_sequence DESC
+                LIMIT 1""",
+                (snapshot.account_id,),
+            ).fetchone()
+            if latest_row is not None:
+                latest = AccountSnapshot.from_dict(
+                    json.loads(str(latest_row["payload"]))
+                ).with_storage_sequence(int(latest_row["storage_sequence"]))
+                if snapshot.observed_at < latest.observed_at:
+                    raise AccountStoreConflict(
+                        "snapshot time moved behind the latest snapshot"
+                    )
+                if snapshot.observed_at == latest.observed_at:
+                    raise AccountStoreConflict(
+                        "same-time snapshot changed immutable account semantics"
+                    )
+            positions = self._positions_for_account(connection, snapshot.account_id)
+''',
+    )
+
+    _replace_once(
+        engine,
+        '''        if current > wall_now:
+            raise PortfolioHealthError("portfolio snapshot time cannot be in the future")
+        instance = self.store.load_instance(self.settings.account_id)
+        if instance is None:
+            raise PortfolioHealthError("portfolio account has not been initialized")
+        positions = tuple(self.store.list_positions(self.settings.account_id))
+''',
+        '''        if current > wall_now:
+            raise PortfolioHealthError("portfolio snapshot time cannot be in the future")
+        instance = self.store.load_instance(self.settings.account_id)
+        if instance is None:
+            raise PortfolioHealthError("portfolio account has not been initialized")
+        if current < instance.updated_at:
+            raise PortfolioHealthError("portfolio snapshot time precedes account state")
+        positions = tuple(self.store.list_positions(self.settings.account_id))
+''',
+    )
+    _replace_once(
+        engine,
+        '''        prior = self.store.latest_snapshot(self.settings.account_id)
+        balances = self.store.balances(self.settings.account_id)
+''',
+        '''        prior = self.store.latest_snapshot(self.settings.account_id)
+        if prior is not None and current < prior.observed_at:
+            raise PortfolioHealthError("portfolio snapshot time moved backwards")
+        balances = self.store.balances(self.settings.account_id)
+''',
+    )
+
+    _replace_once(
+        runtime,
+        '''        async with self._cycle_lock:
+            try:
+                bootstrap = await asyncio.to_thread(
+''',
+        '''        async with self._cycle_lock:
+            try:
+                if (
+                    self.health.last_cycle_at_ms is not None
+                    and current < self.health.last_cycle_at_ms
+                ):
+                    raise ValueError("portfolio runtime clock moved backwards")
+                bootstrap = await asyncio.to_thread(
+''',
+    )
+
+    _append_once(
+        store_test,
+        "def test_snapshot_time_is_monotonic_at_store_boundary(",
+        '''def test_snapshot_time_is_monotonic_at_store_boundary(tmp_path) -> None:
+    store, _, initialized = initialize_store(tmp_path)
+    first = build_account_snapshot(
+        account_id="paper",
+        observed_at=NOW + 2,
+        balances=initialized.balances,
+        positions=(),
+        day_start_equity=initialized.balances.settled_assets,
+        peak_equity=initialized.balances.settled_assets,
+        consecutive_losses=0,
+        watermarks=AccountWatermarks(),
+    )
+    committed = store.commit_snapshot(first)
+
+    regressed = build_account_snapshot(
+        account_id="paper",
+        observed_at=NOW + 1,
+        balances=initialized.balances,
+        positions=(),
+        day_start_equity=initialized.balances.settled_assets,
+        peak_equity=initialized.balances.settled_assets,
+        consecutive_losses=0,
+        watermarks=AccountWatermarks(),
+    )
+    with pytest.raises(AccountStoreConflict, match="latest snapshot"):
+        store.commit_snapshot(regressed)
+
+    assert store.latest_snapshot("paper") == committed.snapshot
+
+
+def test_account_instance_time_never_regresses_across_streams(tmp_path) -> None:
+    from crypto_quant.portfolio_accounting import MarkAccountingResult
+    from crypto_quant.portfolio_facts import make_mark_price_fact
+
+    store, policy, _ = initialize_store(tmp_path)
+    fact = make_mark_price_fact(
+        account_id="paper",
+        source_event_id="flat-mark-ahead-of-cash-flow",
+        symbol="ETH/USDT:USDT",
+        observed_at=NOW + 2,
+        source_sequence=1,
+        mark_price=50,
+    )
+    store.commit_mark(MarkAccountingResult(fact, None), policy)
+    deposit = deposit_transaction(
+        account_id="paper",
+        amount="1",
+        event_time=NOW + 1,
+        source_id="deposit-after-later-mark",
+        policy=policy,
+    )
+    store.apply_external_transaction(deposit, policy)
+
+    instance = store.load_instance("paper")
+    assert instance is not None
+    assert instance.updated_at == NOW + 2
+''',
+    )
+
+    _append_once(
+        engine_test,
+        "def test_snapshot_cannot_precede_account_state_or_prior_snapshot(",
+        '''def test_snapshot_cannot_precede_account_state_or_prior_snapshot(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    engine, _, _, _, portfolio_store, _, _ = system(tmp_path)
+    monkeypatch.setattr(
+        "crypto_quant.portfolio_engine.time.time",
+        lambda: (NOW + 100) / 1000,
+    )
+    engine.apply_mark(
+        source_event_id="flat-account-temporal-mark",
+        symbol="ETH/USDT:USDT",
+        observed_at=NOW + 2,
+        source_sequence=1,
+        mark_price=50,
+    )
+
+    with pytest.raises(PortfolioHealthError, match="precedes account state"):
+        engine.snapshot(observed_at=NOW + 1)
+
+    first = engine.snapshot(observed_at=NOW + 3)
+    with pytest.raises(PortfolioHealthError, match="moved backwards"):
+        engine.snapshot(observed_at=NOW + 2)
+
+    assert portfolio_store.latest_snapshot("paper") == first
+''',
+    )
+
+    _append_once(
+        runtime_test,
+        "def test_runtime_rejects_clock_rollback_before_processing(",
+        '''def test_runtime_rejects_clock_rollback_before_processing(tmp_path) -> None:
+    engine, _, portfolio_store, _ = runtime_system(tmp_path)
+    runtime = PortfolioRuntime(
+        engine,
+        PortfolioRuntimeSettings(snapshot_interval_ms=0),
+        clock=lambda: NOW + 3,
+    )
+    asyncio.run(runtime.run_once())
+    journal_count = portfolio_store.metrics("paper")["journal_transactions"]
+    cycles = runtime.health.cycles
+
+    with pytest.raises(ValueError, match="clock moved backwards"):
+        asyncio.run(runtime.run_once(now_ms=NOW + 2))
+
+    assert runtime.health.cycles == cycles
+    assert runtime.health.failures == 1
+    assert portfolio_store.metrics("paper")["journal_transactions"] == journal_count
+''',
+    )
 
 
 def _run_patch(repo_root: Path, relative: str) -> None:
@@ -173,11 +432,13 @@ def _verify_markers(repo_root: Path) -> None:
 def _validate_patch_chain(repo_root: Path, *, verify_idempotency: bool) -> None:
     for relative in PATCH_CHAIN:
         _run_patch(repo_root, relative)
+    _apply_temporal_hardening(repo_root)
     if not verify_idempotency:
         return
     first = _fingerprint(repo_root)
     for relative in PATCH_CHAIN:
         _run_patch(repo_root, relative)
+    _apply_temporal_hardening(repo_root)
     second = _fingerprint(repo_root)
     changed = sorted(set(first) | set(second))
     changed = [path for path in changed if first.get(path) != second.get(path)]
