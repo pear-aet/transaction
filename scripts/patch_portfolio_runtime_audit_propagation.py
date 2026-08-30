@@ -54,13 +54,11 @@ from dataclasses import dataclass
 from decimal import Decimal
 ''',
 )
-
 replace_all(
     STORE,
     '"UPDATE account_instances SET updated_at=? WHERE account_id=?"',
     '"UPDATE account_instances SET updated_at=max(updated_at,?) WHERE account_id=?"',
 )
-
 replace_once(
     STORE,
     '''                return SnapshotCommit(existing, True)
@@ -109,7 +107,136 @@ replace_once(
     risk_overrun = max(ZERO, initial_risk_after - approved_risk_after)
 ''',
 )
+replace_once(
+    ACCOUNTING,
+    '''    if event_time < position.updated_at:
+        raise PortfolioAccountingError("funding event time moved backwards")
+    if position.last_funding_time is not None and event_time <= position.last_funding_time:
+        raise PortfolioAccountingError("funding event time did not advance")
+''',
+    '''    assert position.last_execution_time is not None
+    if event_time < position.opened_at:
+        raise PortfolioAccountingError("funding event precedes position opening")
+    if event_time <= position.last_execution_time:
+        raise PortfolioAccountingError(
+            "funding event does not follow the latest execution"
+        )
+    if position.last_funding_time is not None and event_time <= position.last_funding_time:
+        raise PortfolioAccountingError("funding event time did not advance")
+''',
+)
+replace_once(
+    ACCOUNTING,
+    '''    next_position = replace(
+        position,
+        mark_price=selected_mark,
+        funding_pnl=position.funding_pnl + signed_pnl,
+        last_funding_time=event_time,
+        updated_at=event_time,
+        version=position.version + 1,
+    )
+''',
+    '''    next_position = replace(
+        position,
+        mark_price=(
+            position.mark_price
+            if position.last_mark_time is not None
+            and position.last_mark_time > event_time
+            else selected_mark
+        ),
+        funding_pnl=position.funding_pnl + signed_pnl,
+        last_funding_time=event_time,
+        updated_at=max(position.updated_at, event_time),
+        version=position.version + 1,
+    )
+''',
+)
 
+replace_once(
+    ENGINE,
+    '''from dataclasses import dataclass
+''',
+    '''from dataclasses import dataclass, replace
+''',
+)
+replace_once(
+    ENGINE,
+    '''            commit = self.store.commit_execution_fill(
+                result,
+''',
+    '''            result = self._cover_with_latest_mark(
+                result,
+                source_time=exact.update.event_time,
+            )
+            commit = self.store.commit_execution_fill(
+                result,
+''',
+)
+replace_once(
+    ENGINE,
+    '''        commit = self.store.commit_funding(
+            account_id=self.settings.account_id,
+''',
+    '''        result = self._cover_with_latest_mark(
+            result,
+            source_time=event_time,
+        )
+        commit = self.store.commit_funding(
+            account_id=self.settings.account_id,
+''',
+)
+replace_once(
+    ENGINE,
+    '''    @staticmethod
+    def _utc_day(timestamp_ms: int) -> str:
+''',
+    '''    def _cover_with_latest_mark(self, result, *, source_time: int):
+        position = result.position
+        if position is None:
+            return result
+        mark = self.store.latest_mark(
+            self.settings.account_id,
+            position.symbol,
+        )
+        if mark is None or mark.observed_at < source_time:
+            return result
+        assert position.last_execution_time is not None
+        if mark.observed_at < position.last_execution_time:
+            return result
+        covered = replace(
+            position,
+            mark_price=mark.mark_price,
+            last_mark_time=mark.observed_at,
+            updated_at=max(position.updated_at, mark.observed_at),
+        )
+        return result if covered == position else replace(result, position=covered)
+
+    @staticmethod
+    def _utc_day(timestamp_ms: int) -> str:
+''',
+)
+replace_once(
+    ENGINE,
+    '''            elif (
+                mark.observed_at != position.updated_at
+                or mark.mark_price != position.mark_price
+            ):
+                # A pre-fill or pre-funding mark must not certify a position
+                # whose economic state changed afterwards.
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+''',
+    '''            elif (
+                position.last_mark_time is None
+                or mark.observed_at != position.last_mark_time
+                or mark.mark_price != position.mark_price
+                or position.last_execution_time is None
+                or mark.observed_at < position.last_execution_time
+            ):
+                # A mark must cover the latest exposure-changing execution.
+                # Funding and accounting updates do not invalidate its price.
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+''',
+)
 replace_once(
     ENGINE,
     '''        if current > wall_now:
@@ -129,7 +256,6 @@ replace_once(
         positions = tuple(self.store.list_positions(self.settings.account_id))
 ''',
 )
-
 replace_once(
     ENGINE,
     '''        prior = self.store.latest_snapshot(self.settings.account_id)
@@ -141,7 +267,6 @@ replace_once(
         balances = self.store.balances(self.settings.account_id)
 ''',
 )
-
 replace_once(
     ENGINE,
     '''            adjusted_day_start = (
@@ -238,7 +363,6 @@ replace_once(
     '''    assert result.position.version == position.version + 1
 ''',
 )
-
 replace_once(
     ENGINE_TEST,
     '''    assert after_withdrawal.equity == after_withdrawal.day_start_equity
@@ -323,7 +447,6 @@ def test_account_instance_time_never_regresses_across_streams(tmp_path) -> None:
     assert instance.updated_at == NOW + 2
 ''',
 )
-
 append_once(
     ENGINE_TEST,
     "def test_snapshot_cannot_precede_account_state_or_prior_snapshot(",
@@ -352,9 +475,68 @@ append_once(
         engine.snapshot(observed_at=NOW + 2)
 
     assert portfolio_store.latest_snapshot("paper") == first
+
+
+def test_late_fill_reuses_newer_canonical_mark(tmp_path, monkeypatch) -> None:
+    (
+        engine,
+        _,
+        _,
+        execution_store,
+        _,
+        _,
+        stored_command,
+    ) = system(tmp_path)
+    monkeypatch.setattr(
+        "crypto_quant.portfolio_engine.time.time",
+        lambda: (NOW + 100) / 1000,
+    )
+    engine.apply_mark(
+        source_event_id="late-fill-covering-mark",
+        symbol=stored_command.command.symbol,
+        observed_at=NOW + 3,
+        source_sequence=1,
+        mark_price=105,
+    )
+    dispatch_and_fill_primary(execution_store, stored_command)
+    engine.bootstrap(now_ms=NOW + 4)
+
+    position = engine.store.load_position(
+        "paper",
+        stored_command.command.symbol,
+    )
+    assert position is not None
+    assert position.last_execution_time == NOW + 2
+    assert position.last_mark_time == NOW + 3
+    assert position.updated_at == NOW + 3
+    assert position.mark_price == Decimal("105")
+    snapshot = engine.snapshot(observed_at=NOW + 3)
+    assert snapshot.global_halt is False
+
+
+def test_retroactive_funding_before_latest_execution_fails(tmp_path) -> None:
+    (
+        engine,
+        _,
+        _,
+        execution_store,
+        _,
+        _,
+        stored_command,
+    ) = system(tmp_path)
+    dispatch_and_fill_primary(execution_store, stored_command)
+    engine.bootstrap(now_ms=NOW + 3)
+
+    with pytest.raises(PortfolioAccountingError, match="latest execution"):
+        engine.apply_funding(
+            source_id="retroactive-funding",
+            symbol=stored_command.command.symbol,
+            event_time=NOW + 1,
+            rate=Decimal("0.0001"),
+            mark_price=Decimal("100"),
+        )
 ''',
 )
-
 append_once(
     RUNTIME_TEST,
     "def test_runtime_rejects_clock_rollback_before_processing(",
