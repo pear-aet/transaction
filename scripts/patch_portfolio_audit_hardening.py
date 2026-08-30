@@ -24,6 +24,20 @@ def append_once(path: Path, marker: str, content: str) -> None:
 store = Path("src/crypto_quant/portfolio_store.py")
 replace_once(
     store,
+    '''            instance = self._instance_from_row(row)
+            self._assert_instance(instance, policy)
+            if instance.status is AccountStatus.HALTED:
+                raise AccountInstanceError("halted account cannot accept external cash flow")
+            stored, _, duplicate = self._commit_transaction(connection, transaction)
+''',
+    '''            instance = self._instance_from_row(row)
+            self._assert_instance(instance, policy)
+            # A halt blocks new risk, not already-observed economic facts.
+            stored, _, duplicate = self._commit_transaction(connection, transaction)
+''',
+)
+replace_once(
+    store,
     '''        if transaction.event_time < updated_at:
             raise AccountStoreConflict("journal event time moved behind the account checkpoint")
         next_balances = balances.apply(transaction)
@@ -143,6 +157,35 @@ append_once(
     assert store.balances("paper").cash == Decimal("10015.00000000")
     instance = store.load_instance("paper")
     assert instance is not None
+    assert instance.updated_at == NOW + 2
+
+
+def test_halted_account_still_accepts_external_economic_facts(tmp_path) -> None:
+    store, policy, _ = initialize_store(tmp_path)
+    assert store.halt_account("paper", "manual_accounting_review", NOW) is True
+
+    deposit = deposit_transaction(
+        account_id="paper",
+        amount="100",
+        event_time=NOW + 1,
+        source_id="halted-account-deposit",
+        policy=policy,
+    )
+    withdrawal = withdrawal_transaction(
+        account_id="paper",
+        amount="40",
+        event_time=NOW + 2,
+        source_id="halted-account-withdrawal",
+        policy=policy,
+    )
+    store.apply_external_transaction(deposit, policy)
+    store.apply_external_transaction(withdrawal, policy)
+
+    assert store.balances("paper").cash == Decimal("10060.00000000")
+    instance = store.load_instance("paper")
+    assert instance is not None
+    assert instance.status.value == "halted"
+    assert instance.halt_reason == "manual_accounting_review"
     assert instance.updated_at == NOW + 2
 ''',
 )
