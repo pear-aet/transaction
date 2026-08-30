@@ -11,6 +11,19 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 
 RUNTIME = "src/crypto_quant/portfolio_runtime.py"
+STORE = "src/crypto_quant/portfolio_store.py"
+LIFECYCLE_TEST = "tests/test_portfolio_lifecycle.py"
+
+replace_once(
+    STORE,
+    '''import threading
+from dataclasses import dataclass
+''',
+    '''import threading
+from dataclasses import dataclass
+from decimal import Decimal
+''',
+)
 
 replace_once(
     RUNTIME,
@@ -58,5 +71,14 @@ replace_once(
                 )
                 self.health.audit_findings += bootstrap.audit_findings
                 self.health.last_cycle_at_ms = current
+''',
+)
+
+replace_once(
+    LIFECYCLE_TEST,
+    '''    assert result.position.version == position.version + 1
+    assert balances == balances
+''',
+    '''    assert result.position.version == position.version + 1
 ''',
 )
