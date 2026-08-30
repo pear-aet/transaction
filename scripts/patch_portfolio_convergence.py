@@ -102,6 +102,30 @@ replace_once(
 
 replace_once(
     ENGINE,
+    '''            if command is None:
+                self._critical_finding(
+                    kind=ReconciliationKind.EXECUTION_COMMAND,
+                    source_id=reservation.command_id,
+                    found_at=current,
+                    expected={"command": "present"},
+                    actual={"command": "missing"},
+                )
+                continue
+''',
+    '''            if command is None:
+                self._critical_finding(
+                    kind=ReconciliationKind.EXECUTION_COMMAND,
+                    source_id=reservation.command_id,
+                    found_at=reservation.updated_at,
+                    expected={"command": "present"},
+                    actual={"command": "missing"},
+                )
+                continue
+''',
+)
+
+replace_once(
+    ENGINE,
     '''            if command.delivery_state not in {
                 ExecutionDeliveryState.RECORDED,
                 ExecutionDeliveryState.COMPLETED,
@@ -138,6 +162,42 @@ replace_once(
                 event_time=max(terminal_time, reservation.updated_at),
                 reason=f"execution_{command.delivery_state.value}",
             )
+''',
+)
+
+replace_once(
+    ENGINE,
+    '''            if stored_command is None:
+                self._critical_finding(
+                    kind=ReconciliationKind.EXECUTION_COMMAND,
+                    source_id=reservation.command_id,
+                    found_at=current,
+                    expected={"present": True},
+                    actual={"present": False},
+                )
+''',
+    '''            if stored_command is None:
+                self._critical_finding(
+                    kind=ReconciliationKind.EXECUTION_COMMAND,
+                    source_id=reservation.command_id,
+                    found_at=reservation.updated_at,
+                    expected={"present": True},
+                    actual={"present": False},
+                )
+''',
+)
+
+replace_once(
+    ENGINE,
+    '''                    self._critical_finding(
+                        kind=ReconciliationKind.EXECUTION_FILL,
+                        source_id=order.order_id,
+                        found_at=current,
+''',
+    '''                    self._critical_finding(
+                        kind=ReconciliationKind.EXECUTION_FILL,
+                        source_id=order.order_id,
+                        found_at=max(order.updated_at, cursor.updated_at),
 ''',
 )
 
@@ -243,5 +303,34 @@ def test_terminal_reservation_release_uses_execution_transition_time(tmp_path) -
     ]
     assert len(releases) == 1
     assert releases[0].event_time == NOW + 2
+
+
+def test_reconciliation_findings_are_idempotent_across_cycles(tmp_path) -> None:
+    (
+        engine,
+        _,
+        _,
+        execution_store,
+        portfolio_store,
+        _,
+        stored_command,
+    ) = system(tmp_path)
+    engine.process_command(stored_command, processed_at=NOW + 100)
+    dispatch_and_fill_primary(execution_store, stored_command)
+
+    assert engine.reconcile_execution(now_ms=NOW + 200) == 1
+    first_findings = portfolio_store.reconciliation_findings("paper")
+    first_instance = portfolio_store.load_instance("paper")
+    assert len(first_findings) == 1
+    assert first_instance is not None
+    assert first_instance.halt_reason is not None
+
+    assert engine.reconcile_execution(now_ms=NOW + 400) == 1
+    second_findings = portfolio_store.reconciliation_findings("paper")
+    second_instance = portfolio_store.load_instance("paper")
+    assert second_findings == first_findings
+    assert second_instance is not None
+    assert second_instance.halt_reason == first_instance.halt_reason
+    assert engine.health.reconciliation_failures == 1
 ''',
 )
