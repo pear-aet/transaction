@@ -60,6 +60,26 @@ replace_once(
 )
 replace_once(
     path,
+    '''            if mark.observed_at > current:
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+            elif current - mark.observed_at > self.policy.max_mark_age_ms:
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+''',
+    '''            if mark.observed_at > current:
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+            elif current - mark.observed_at > self.policy.max_mark_age_ms:
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+            elif (
+                mark.observed_at != position.updated_at
+                or mark.mark_price != position.mark_price
+            ):
+                # A pre-fill or pre-funding mark must not certify a position
+                # whose economic state changed afterwards.
+                halt_reasons.append(AccountHaltReason.STALE_MARK)
+''',
+)
+replace_once(
+    path,
     '''        balances = self.store.balances(self.settings.account_id)
         provisional = build_account_snapshot(
 ''',
@@ -247,5 +267,48 @@ append_once(
     assert after_withdrawal.peak_equity == after_deposit.peak_equity - Decimal("250")
     assert after_withdrawal.equity == after_withdrawal.day_start_equity
     assert after_withdrawal.equity == after_withdrawal.peak_equity
+
+
+def test_pre_position_mark_cannot_certify_new_exposure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    (
+        engine,
+        _,
+        _,
+        execution_store,
+        _,
+        _,
+        stored_command,
+    ) = system(tmp_path)
+    monkeypatch.setattr(
+        "crypto_quant.portfolio_engine.time.time",
+        lambda: (NOW + 100) / 1000,
+    )
+    engine.apply_mark(
+        source_event_id="mark-before-position",
+        symbol=stored_command.command.symbol,
+        observed_at=NOW,
+        source_sequence=1,
+        mark_price=100,
+    )
+    dispatch_and_fill_primary(execution_store, stored_command)
+    engine.bootstrap(now_ms=NOW + 3)
+
+    stale = engine.snapshot(observed_at=NOW + 3)
+    assert stale.global_halt is True
+    assert AccountHaltReason.STALE_MARK in stale.halt_reasons
+
+    engine.apply_mark(
+        source_event_id="mark-after-position",
+        symbol=stored_command.command.symbol,
+        observed_at=NOW + 4,
+        source_sequence=2,
+        mark_price=101,
+    )
+    healthy = engine.snapshot(observed_at=NOW + 4)
+    assert healthy.global_halt is False
+    assert AccountHaltReason.STALE_MARK not in healthy.halt_reasons
 ''',
 )
