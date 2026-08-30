@@ -21,3 +21,21 @@ for old, new in replacements.items():
             f"found {count}"
         )
 path.write_text(text, encoding="utf-8")
+
+finalization = Path("scripts/patch_portfolio_runtime_audit_propagation.py")
+finalization_text = finalization.read_text(encoding="utf-8")
+old = '''            and position.last_mark_time > event_time
+            else selected_mark
+'''
+new = '''            and position.last_mark_time >= event_time
+            else selected_mark
+'''
+count = finalization_text.count(old)
+if count == 1:
+    finalization.write_text(finalization_text.replace(old, new), encoding="utf-8")
+elif count == 0 and new in finalization_text:
+    pass
+else:
+    raise SystemExit(
+        f"expected one funding/mark priority source or existing target, found {count}"
+    )
