@@ -143,6 +143,14 @@ replace_once(
 
 replace_once(
     TEST,
+    '''from crypto_quant.portfolio_contracts import AccountHaltReason, AccountPolicy
+''',
+    '''from crypto_quant.portfolio_accounting import PortfolioAccountingError
+from crypto_quant.portfolio_contracts import AccountHaltReason, AccountPolicy
+''',
+)
+replace_once(
+    TEST,
     '''    ExecutionContext,
     ExecutionMarketSnapshot,
 ''',
