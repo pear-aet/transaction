@@ -87,3 +87,113 @@ else:
     raise SystemExit(
         f"expected one funding/mark priority source or existing target, found {count}"
     )
+
+finalization_text = finalization.read_text(encoding="utf-8")
+late_execution_marker = "# Portfolio late-execution-after-funding hardening"
+if late_execution_marker not in finalization_text:
+    finalization.write_text(
+        finalization_text.rstrip()
+        + "\n\n"
+        + r"""# Portfolio late-execution-after-funding hardening
+
+def _insert_execution_after_funding_barrier(
+    path: Path,
+    *,
+    function_name: str,
+    anchor: str,
+) -> None:
+    text = path.read_text(encoding="utf-8")
+    marker = "execution fill cannot be applied at or before settled funding"
+    start = text.index(f"def {function_name}(")
+    end = text.find("\ndef ", start + 1)
+    if end < 0:
+        end = len(text)
+    if marker in text[start:end]:
+        return
+    anchor_index = text.index(anchor, start, end)
+    insertion = '''    if (
+        position is not None
+        and position.last_funding_time is not None
+        and update.event_time <= position.last_funding_time
+    ):
+        raise PortfolioAccountingError(
+            "execution fill cannot be applied at or before settled funding"
+        )
+'''
+    path.write_text(
+        text[:anchor_index] + insertion + text[anchor_index:],
+        encoding="utf-8",
+    )
+
+
+_accounting = Path("src/crypto_quant/portfolio_accounting.py")
+_insert_execution_after_funding_barrier(
+    _accounting,
+    function_name="apply_open_fill",
+    anchor="    expected_side = (\n",
+)
+_insert_execution_after_funding_barrier(
+    _accounting,
+    function_name="apply_close_fill",
+    anchor="    expected_action = (\n",
+)
+
+_test = Path("tests/test_portfolio_lifecycle.py")
+_test_text = _test.read_text(encoding="utf-8")
+_test_marker = "def test_execution_at_or_before_settled_funding_fails_closed("
+if _test_marker not in _test_text:
+    _test.write_text(
+        _test_text.rstrip()
+        + "\n\n"
+        + '''def test_execution_at_or_before_settled_funding_fails_closed() -> None:
+    policy, balances, _, command, opened = opened_position()
+    position = opened.position
+    assert position is not None
+    funded = apply_funding_to_position(
+        account_id="paper",
+        position=position,
+        rate=Decimal("0.0001"),
+        mark_price=Decimal("101"),
+        event_time=NOW + 3,
+        source_id="execution-after-funding-boundary",
+        policy=policy,
+    )
+    assert funded.transaction is not None
+    balances = balances.apply(funded.transaction)
+    protective = next(
+        order for order in command.orders
+        if order.leg_type is OrderLegType.PROTECTIVE_STOP
+    )
+    quantity = funded.position.quantity / Decimal("2")
+
+    with pytest.raises(
+        RuntimeError,
+        match="at or before settled funding",
+    ):
+        apply_close_fill(
+            command=command,
+            order=protective,
+            update=cumulative_update(
+                protective,
+                update_id="late-close-after-funding",
+                cumulative_quantity=quantity,
+                cumulative_quote_value=quantity * Decimal("99"),
+                cumulative_fee=Decimal("0.01"),
+                event_time=NOW + 3,
+                state=OrderState.PARTIALLY_FILLED,
+            ),
+            cursor=OrderAccountingCursor(
+                protective.order_id,
+                protective.command_id,
+            ),
+            reservation=opened.reservation,
+            balances=balances,
+            policy=policy,
+            position=funded.position,
+        )
+''',
+        encoding="utf-8",
+    )
+""",
+        encoding="utf-8",
+    )
