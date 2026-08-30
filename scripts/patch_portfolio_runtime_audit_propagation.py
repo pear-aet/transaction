@@ -12,6 +12,8 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 RUNTIME = "src/crypto_quant/portfolio_runtime.py"
 STORE = "src/crypto_quant/portfolio_store.py"
+ENGINE = "src/crypto_quant/portfolio_engine.py"
+ENGINE_TEST = "tests/test_portfolio_engine.py"
 LIFECYCLE_TEST = "tests/test_portfolio_lifecycle.py"
 
 replace_once(
@@ -22,6 +24,29 @@ from dataclasses import dataclass
     '''import threading
 from dataclasses import dataclass
 from decimal import Decimal
+''',
+)
+
+replace_once(
+    ENGINE,
+    '''            adjusted_day_start = (
+                prior.day_start_equity + external_capital_delta
+                if self._utc_day(prior.observed_at) == self._utc_day(current)
+                else prior.equity + external_capital_delta
+            )
+            adjusted_peak = prior.peak_equity + external_capital_delta
+            if adjusted_day_start < ZERO or adjusted_peak < ZERO:
+                raise PortfolioHealthError(
+                    "external cash flow made Portfolio equity anchors negative"
+                )
+''',
+    '''            raw_day_start = (
+                prior.day_start_equity + external_capital_delta
+                if self._utc_day(prior.observed_at) == self._utc_day(current)
+                else prior.equity + external_capital_delta
+            )
+            adjusted_day_start = max(ZERO, raw_day_start)
+            adjusted_peak = max(ZERO, prior.peak_equity + external_capital_delta)
 ''',
 )
 
@@ -80,5 +105,28 @@ replace_once(
     assert balances == balances
 ''',
     '''    assert result.position.version == position.version + 1
+''',
+)
+
+replace_once(
+    ENGINE_TEST,
+    '''    assert after_withdrawal.equity == after_withdrawal.day_start_equity
+    assert after_withdrawal.equity == after_withdrawal.peak_equity
+''',
+    '''    assert after_withdrawal.equity == after_withdrawal.day_start_equity
+    assert after_withdrawal.equity == after_withdrawal.peak_equity
+
+    final_withdrawal = withdrawal_transaction(
+        account_id="paper",
+        amount=after_withdrawal.balances.cash,
+        event_time=NOW + 3,
+        source_id="equity-anchor-full-withdrawal",
+        policy=engine.policy,
+    )
+    portfolio_store.apply_external_transaction(final_withdrawal, engine.policy)
+    empty = engine.snapshot(observed_at=NOW + 3)
+    assert empty.equity == Decimal("0")
+    assert empty.day_start_equity == Decimal("0")
+    assert empty.peak_equity == Decimal("0")
 ''',
 )
