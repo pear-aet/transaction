@@ -21,6 +21,21 @@ def append_once(path: Path, marker: str, content: str) -> None:
     path.write_text(text.rstrip() + "\n\n" + content.lstrip("\n"), encoding="utf-8")
 
 
+contracts = Path("src/crypto_quant/portfolio_contracts.py")
+replace_once(
+    contracts,
+    '''    @property
+    def available_balance(self) -> Decimal:
+        return self.balances.cash
+''',
+    '''    @property
+    def available_balance(self) -> Decimal:
+        # Cross-margin free collateral includes unrealized PnL. Command and
+        # position margin are already excluded from cash by the journal.
+        return max(ZERO, self.balances.cash + self.unrealized_pnl)
+''',
+)
+
 path = Path("src/crypto_quant/portfolio_engine.py")
 replace_once(
     path,
@@ -101,6 +116,83 @@ replace_once(
         else:
             self.health.last_error = None
         return commit.snapshot
+''',
+)
+
+append_once(
+    Path("tests/test_portfolio_contracts.py"),
+    "def test_cross_margin_available_balance_includes_unrealized_pnl(",
+    '''def test_cross_margin_available_balance_includes_unrealized_pnl() -> None:
+    balances = AccountBalances(
+        cash=Decimal("900"),
+        position_margin=Decimal("100"),
+        external_capital=Decimal("1000"),
+    )
+    position = PortfolioPosition(
+        position_id="available-position",
+        account_id="paper",
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.LONG,
+        quantity=Decimal("2"),
+        average_entry_price=Decimal("100"),
+        mark_price=Decimal("50"),
+        stop_price=Decimal("99"),
+        position_margin=Decimal("100"),
+        initial_risk=Decimal("2"),
+        maintenance_margin_rate=Decimal("0.005"),
+        correlation_group="default",
+        open_command_id="available-command",
+        open_risk_decision_id="available-risk",
+        open_intent_id="available-intent",
+        opened_at=10,
+        updated_at=20,
+    )
+    losing = build_account_snapshot(
+        account_id="paper",
+        observed_at=20,
+        balances=balances,
+        positions=(position,),
+        day_start_equity=Decimal("1000"),
+        peak_equity=Decimal("1000"),
+        consecutive_losses=0,
+        watermarks=AccountWatermarks(),
+    )
+    assert losing.unrealized_pnl == Decimal("-100")
+    assert losing.available_balance == Decimal("800")
+    assert losing.to_risk_snapshot().available_balance == 800
+
+    profitable = build_account_snapshot(
+        account_id="paper",
+        observed_at=21,
+        balances=balances,
+        positions=(replace(position, mark_price=Decimal("150"), updated_at=21),),
+        day_start_equity=Decimal("1000"),
+        peak_equity=Decimal("1100"),
+        consecutive_losses=0,
+        watermarks=AccountWatermarks(),
+    )
+    assert profitable.unrealized_pnl == Decimal("100")
+    assert profitable.available_balance == Decimal("1000")
+
+    exhausted = build_account_snapshot(
+        account_id="paper",
+        observed_at=22,
+        balances=balances,
+        positions=(
+            replace(
+                position,
+                quantity=Decimal("20"),
+                mark_price=Decimal("50"),
+                updated_at=22,
+            ),
+        ),
+        day_start_equity=Decimal("1000"),
+        peak_equity=Decimal("1000"),
+        consecutive_losses=0,
+        watermarks=AccountWatermarks(),
+    )
+    assert exhausted.unrealized_pnl == Decimal("-1000")
+    assert exhausted.available_balance == Decimal("0")
 ''',
 )
 
