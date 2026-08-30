@@ -10,7 +10,7 @@ def replace_once(path: Path, old: str, new: str) -> None:
     if count == 0 and new in text:
         return
     raise SystemExit(
-        f"expected one conservative-rounding source or existing target in {path}, "
+        f"expected one lifecycle-hardening source or existing target in {path}, "
         f"found {count}"
     )
 
@@ -26,12 +26,89 @@ CONTRACTS = Path("src/crypto_quant/portfolio_contracts.py")
 ACCOUNTING = Path("src/crypto_quant/portfolio_accounting.py")
 STORE = Path("src/crypto_quant/portfolio_store.py")
 CONTRACTS_TEST = Path("tests/test_portfolio_contracts.py")
+ACCOUNTING_TEST = Path("tests/test_portfolio_accounting.py")
 
 replace_once(
     CONTRACTS,
     '''from decimal import Decimal, InvalidOperation
 ''',
     '''from decimal import Decimal, InvalidOperation, ROUND_CEILING, ROUND_FLOOR
+''',
+)
+replace_once(
+    CONTRACTS,
+    '''    last_funding_time: int | None = None
+''',
+    '''    last_funding_time: int | None = None
+    last_execution_time: int | None = None
+    last_mark_time: int | None = None
+''',
+)
+replace_once(
+    CONTRACTS,
+    '''        if self.last_funding_time is not None:
+            if self.last_funding_time < self.opened_at:
+                raise ValueError("position funding time precedes opening")
+            if self.last_funding_time > self.updated_at:
+                raise ValueError("position funding time exceeds updated_at")
+        if not ZERO < self.maintenance_margin_rate < Decimal("1"):
+''',
+    '''        execution_time = (
+            self.opened_at
+            if self.last_execution_time is None
+            else self.last_execution_time
+        )
+        object.__setattr__(self, "last_execution_time", execution_time)
+        for name, value in (
+            ("last_execution_time", execution_time),
+            ("last_mark_time", self.last_mark_time),
+            ("last_funding_time", self.last_funding_time),
+        ):
+            if value is None:
+                continue
+            if value < self.opened_at:
+                raise ValueError(f"position {name} precedes opening")
+            if value > self.updated_at:
+                raise ValueError(f"position {name} exceeds updated_at")
+        if not ZERO < self.maintenance_margin_rate < Decimal("1"):
+''',
+)
+replace_once(
+    CONTRACTS,
+    '''            "last_funding_time": self.last_funding_time,
+        }
+''',
+    '''            "last_funding_time": self.last_funding_time,
+            "last_execution_time": self.last_execution_time,
+            "last_mark_time": self.last_mark_time,
+        }
+''',
+)
+replace_once(
+    CONTRACTS,
+    '''            last_funding_time=(
+                None
+                if value.get("last_funding_time") is None
+                else int(value["last_funding_time"])
+            ),
+        )
+''',
+    '''            last_funding_time=(
+                None
+                if value.get("last_funding_time") is None
+                else int(value["last_funding_time"])
+            ),
+            last_execution_time=(
+                None
+                if value.get("last_execution_time") is None
+                else int(value["last_execution_time"])
+            ),
+            last_mark_time=(
+                None
+                if value.get("last_mark_time") is None
+                else int(value["last_mark_time"])
+            ),
+        )
 ''',
 )
 replace_once(
@@ -91,6 +168,116 @@ replace_once(
     )
 ''',
 )
+replace_once(
+    ACCOUNTING,
+    '''    if position is not None:
+        if position.side is not expected_side or position.open_command_id != command.command_id:
+            raise PortfolioAccountingError("open fill conflicts with the existing position")
+''',
+    '''    if position is not None:
+        if position.side is not expected_side or position.open_command_id != command.command_id:
+            raise PortfolioAccountingError("open fill conflicts with the existing position")
+        assert position.last_execution_time is not None
+        if update.event_time < position.last_execution_time:
+            raise PortfolioAccountingError("open fill execution time moved backwards")
+        if (
+            position.last_funding_time is not None
+            and update.event_time <= position.last_funding_time
+        ):
+            raise PortfolioAccountingError(
+                "late open fill crosses an applied funding boundary"
+            )
+''',
+)
+replace_once(
+    ACCOUNTING,
+    '''            opened_at=update.event_time,
+            updated_at=update.event_time,
+            opening_fees=delta.fee,
+''',
+    '''            opened_at=update.event_time,
+            updated_at=update.event_time,
+            opening_fees=delta.fee,
+            last_execution_time=update.event_time,
+''',
+)
+replace_once(
+    ACCOUNTING,
+    '''            mark_price=delta.price,
+            position_margin=position.position_margin + margin_allocation,
+            initial_risk=initial_risk_after,
+            maintenance_margin_rate=margin_rate,
+            opening_fees=position.opening_fees + delta.fee,
+            updated_at=update.event_time,
+            version=position.version + 1,
+''',
+    '''            mark_price=(
+                position.mark_price
+                if position.last_mark_time is not None
+                and position.last_mark_time >= update.event_time
+                else delta.price
+            ),
+            position_margin=position.position_margin + margin_allocation,
+            initial_risk=initial_risk_after,
+            maintenance_margin_rate=margin_rate,
+            opening_fees=position.opening_fees + delta.fee,
+            last_execution_time=update.event_time,
+            updated_at=max(position.updated_at, update.event_time),
+            version=position.version + 1,
+''',
+)
+replace_once(
+    ACCOUNTING,
+    '''def apply_mark_price(
+    position: PortfolioPosition,
+    *,
+    mark_price: Decimal | int | float | str,
+    observed_at: int,
+) -> PortfolioPosition:
+    selected = as_decimal(mark_price, "mark_price")
+    if selected <= ZERO:
+        raise ValueError("mark_price must be positive")
+    if observed_at < position.updated_at:
+        raise PortfolioAccountingError("mark price time moved backwards")
+    if observed_at == position.updated_at:
+        if selected != position.mark_price:
+            raise PortfolioAccountingError("same-time mark price revision")
+        return position
+    return replace(
+        position,
+        mark_price=selected,
+        updated_at=observed_at,
+        version=position.version + 1,
+    )
+''',
+    '''def apply_mark_price(
+    position: PortfolioPosition,
+    *,
+    mark_price: Decimal | int | float | str,
+    observed_at: int,
+) -> PortfolioPosition:
+    selected = as_decimal(mark_price, "mark_price")
+    if selected <= ZERO:
+        raise ValueError("mark_price must be positive")
+    assert position.last_execution_time is not None
+    if observed_at < position.last_execution_time:
+        raise PortfolioAccountingError("mark price precedes the latest execution")
+    if position.last_mark_time is not None:
+        if observed_at < position.last_mark_time:
+            raise PortfolioAccountingError("mark price time moved backwards")
+        if observed_at == position.last_mark_time:
+            if selected != position.mark_price:
+                raise PortfolioAccountingError("same-time mark price revision")
+            return position
+    return replace(
+        position,
+        mark_price=selected,
+        last_mark_time=observed_at,
+        updated_at=max(position.updated_at, observed_at),
+        version=position.version + 1,
+    )
+''',
+)
 
 accounting = ACCOUNTING.read_text(encoding="utf-8")
 function_start = accounting.index("def apply_close_fill(")
@@ -104,6 +291,16 @@ new_prefix = '''    delta, next_cursor = derive_fill_delta(
         update=update,
         policy=policy,
     )
+    assert position.last_execution_time is not None
+    if update.event_time < position.last_execution_time:
+        raise PortfolioAccountingError("close fill execution time moved backwards")
+    if (
+        position.last_funding_time is not None
+        and update.event_time <= position.last_funding_time
+    ):
+        raise PortfolioAccountingError(
+            "late close fill crosses an applied funding boundary"
+        )
     quantity_tolerance = Decimal("0.000000000001")
     quantity_difference = delta.quantity - position.quantity
     if quantity_difference > quantity_tolerance:
@@ -152,6 +349,24 @@ new_prefix = '''    delta, next_cursor = derive_fill_delta(
 tail = accounting[postings_start:function_end].replace(
     "delta.quantity",
     "accounted_quantity",
+)
+tail = tail.replace(
+    '''            mark_price=delta.price,
+            position_margin=position.position_margin - margin_release,
+            initial_risk=position.initial_risk - risk_release,
+            updated_at=update.event_time,
+''',
+    '''            mark_price=(
+                position.mark_price
+                if position.last_mark_time is not None
+                and position.last_mark_time >= update.event_time
+                else delta.price
+            ),
+            position_margin=position.position_margin - margin_release,
+            initial_risk=position.initial_risk - risk_release,
+            last_execution_time=update.event_time,
+            updated_at=max(position.updated_at, update.event_time),
+''',
 )
 accounting = accounting[:block_start] + new_prefix + tail + accounting[function_end:]
 ACCOUNTING.write_text(accounting, encoding="utf-8")
@@ -207,5 +422,113 @@ append_once(
         policy.quantize_up(Decimal("-0.001"))
     with pytest.raises(ValueError, match="non-negative"):
         policy.quantize_down(Decimal("-0.001"))
+
+
+def test_position_time_axes_round_trip_and_validate() -> None:
+    position = PortfolioPosition(
+        position_id="time-axis-position",
+        account_id="paper",
+        symbol="BTC/USDT:USDT",
+        side=PositionSide.LONG,
+        quantity=Decimal("1"),
+        average_entry_price=Decimal("100"),
+        mark_price=Decimal("101"),
+        stop_price=Decimal("99"),
+        position_margin=Decimal("10"),
+        initial_risk=Decimal("1"),
+        maintenance_margin_rate=Decimal("0.005"),
+        correlation_group="default",
+        open_command_id="time-axis-command",
+        open_risk_decision_id="time-axis-risk",
+        open_intent_id="time-axis-intent",
+        opened_at=10,
+        updated_at=30,
+        last_execution_time=20,
+        last_mark_time=30,
+    )
+    assert position.last_execution_time == 20
+    assert position.last_mark_time == 30
+    assert PortfolioPosition.from_dict(position.to_dict()) == position
+
+    with pytest.raises(ValueError, match="last_execution_time exceeds"):
+        replace(position, last_execution_time=31)
+''',
+)
+
+append_once(
+    ACCOUNTING_TEST,
+    "def test_late_partial_fill_preserves_newer_canonical_mark(",
+    '''def test_late_partial_fill_preserves_newer_canonical_mark() -> None:
+    policy = AccountPolicy()
+    balances = initialized_balances(policy)
+    decision = risk_decision()
+    command = execution_command(decision)
+    plan = plan_command_reservation(
+        account_id="paper",
+        command=command,
+        decision=decision,
+        balances=balances,
+        policy=policy,
+        now_ms=command.created_at,
+    )
+    assert plan.transaction is not None
+    balances = balances.apply(plan.transaction)
+    primary = next(order for order in command.orders if order.leg_type is OrderLegType.PRIMARY)
+    quantity = Decimal(str(command.quantity))
+    first_quantity = quantity / Decimal("2")
+    first_quote = first_quantity * Decimal("100")
+    first_fee = policy.quantize_money(first_quote * Decimal("0.001"))
+    first = apply_open_fill(
+        command=command,
+        decision=decision,
+        order=primary,
+        update=cumulative_update(
+            primary,
+            update_id="time-axis-open-1",
+            cumulative_quantity=first_quantity,
+            cumulative_quote_value=first_quote,
+            cumulative_fee=first_fee,
+            event_time=NOW + 1,
+            state=OrderState.PARTIALLY_FILLED,
+        ),
+        cursor=OrderAccountingCursor(primary.order_id, primary.command_id),
+        reservation=plan.reservation,
+        balances=balances,
+        policy=policy,
+        maintenance_margin_rate=Decimal("0.005"),
+    )
+    assert first.position is not None
+    marked = apply_mark_price(first.position, mark_price=105, observed_at=NOW + 3)
+
+    total_quote = first_quote + (quantity - first_quantity) * Decimal("101")
+    total_fee = policy.quantize_money(total_quote * Decimal("0.001"))
+    second = apply_open_fill(
+        command=command,
+        decision=decision,
+        order=primary,
+        update=cumulative_update(
+            primary,
+            update_id="time-axis-open-2",
+            cumulative_quantity=quantity,
+            cumulative_quote_value=total_quote,
+            cumulative_fee=total_fee,
+            event_time=NOW + 2,
+            state=OrderState.FILLED,
+        ),
+        cursor=first.cursor,
+        reservation=first.reservation,
+        balances=balances.apply(first.transaction),
+        policy=policy,
+        maintenance_margin_rate=Decimal("0.005"),
+        position=marked,
+    )
+    assert second.position is not None
+    assert second.position.last_execution_time == NOW + 2
+    assert second.position.last_mark_time == NOW + 3
+    assert second.position.updated_at == NOW + 3
+    assert second.position.mark_price == Decimal("105")
+
+    with pytest.raises(PortfolioAccountingError, match="latest execution"):
+        apply_mark_price(second.position, mark_price=104, observed_at=NOW + 1)
 ''',
 )
