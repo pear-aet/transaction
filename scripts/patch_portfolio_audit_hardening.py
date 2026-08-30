@@ -153,7 +153,19 @@ append_once(
     '''def test_auditor_accepts_cross_stream_event_time_interleaving(tmp_path) -> None:
     from crypto_quant.portfolio_accounting import deposit_transaction
 
-    store, policy = initialized_store(tmp_path)
+    store = PortfolioStore(tmp_path / "portfolio-audit-interleaving.db")
+    policy = AccountPolicy()
+    store.initialize_account(
+        account_id="paper",
+        policy=policy,
+        transaction=initialize_account_transaction(
+            account_id="paper",
+            initial_capital="10000",
+            event_time=NOW - 1,
+            source_id="audit-interleaving-capital",
+            policy=policy,
+        ),
+    )
     store.apply_external_transaction(
         deposit_transaction(
             account_id="paper",
