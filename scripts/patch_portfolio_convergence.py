@@ -18,6 +18,21 @@ def append_once(path: str, marker: str, content: str) -> None:
     file.write_text(text.rstrip() + "\n\n" + content.lstrip("\n"), encoding="utf-8")
 
 
+def replace_exact_count(path: str, old: str, new: str, expected: int) -> None:
+    file = Path(path)
+    text = file.read_text(encoding="utf-8")
+    count = text.count(old)
+    if count == expected:
+        file.write_text(text.replace(old, new), encoding="utf-8")
+        return
+    if count == 0 and text.count(new) == expected:
+        return
+    raise SystemExit(
+        f"expected {expected} sources or existing targets in {path}, found "
+        f"source={count} target={text.count(new)}"
+    )
+
+
 ENGINE = "src/crypto_quant/portfolio_engine.py"
 STORE = "src/crypto_quant/portfolio_store.py"
 TEST = "tests/test_portfolio_engine.py"
@@ -201,7 +216,7 @@ replace_once(
 ''',
 )
 
-replace_once(
+replace_exact_count(
     STORE,
     '''            if instance.status is AccountStatus.HALTED:
                 raise AccountInstanceError("halted account cannot reserve a command")
@@ -209,6 +224,7 @@ replace_once(
     '''            if instance.status is AccountStatus.HALTED and reservation.entry:
                 raise AccountInstanceError("halted account cannot reserve an entry command")
 ''',
+    2,
 )
 
 append_once(
