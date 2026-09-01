@@ -224,17 +224,17 @@ def _run_idempotent_phase(
 ) -> None:
     for relative in scripts:
         _run_patch(repo_root, relative)
-    if not verify_idempotency:
-        return
-    first = _fingerprint(repo_root)
-    for relative in scripts:
+        if not verify_idempotency:
+            continue
+        first = _fingerprint(repo_root)
         _run_patch(repo_root, relative)
-    second = _fingerprint(repo_root)
-    changed = _changed(first, second)
-    if changed:
-        raise SystemExit(
-            f"{phase_name} is not idempotent:\n- " + "\n- ".join(changed)
-        )
+        second = _fingerprint(repo_root)
+        changed = _changed(first, second)
+        if changed:
+            raise SystemExit(
+                f"{phase_name} patch is not locally idempotent: {relative}\n- "
+                + "\n- ".join(changed)
+            )
 
 
 def _parse(repo_root: Path, relative: str) -> ast.Module:
@@ -356,13 +356,13 @@ def _validate_patch_chain(repo_root: Path, *, verify_idempotency: bool) -> None:
     _run_idempotent_phase(
         repo_root,
         CORE_PATCH_CHAIN,
-        phase_name="Portfolio core patch chain",
+        phase_name="Portfolio core",
         verify_idempotency=verify_idempotency,
     )
     _run_idempotent_phase(
         repo_root,
         (FINALIZATION_PATCH,),
-        phase_name="Portfolio finalization patch",
+        phase_name="Portfolio finalization",
         verify_idempotency=verify_idempotency,
     )
 
@@ -380,7 +380,7 @@ def main() -> None:
     parser.add_argument(
         "--single-pass",
         action="store_true",
-        help="skip second-pass idempotency proof (not allowed in acceptance workflows)",
+        help="skip local patch idempotency proof (not allowed in acceptance workflows)",
     )
     args = parser.parse_args()
     repo_root = Path(args.repo_root).resolve()
