@@ -122,12 +122,13 @@ for name in FILES:
     _normalize_helper(Path(name))
 
 finalization = Path("scripts/patch_portfolio_runtime_audit_propagation.py")
+_normalize_helper(finalization)
 finalization_text = finalization.read_text(encoding="utf-8")
 for marker in (
-    "def replace_once(path: str, old: str, new: str) -> None:",
-    "if count == 0 and new in text:",
     "def replace_all(path: str, old: str, new: str) -> None:",
+    "if new in text:",
     "def append_once(path: str, marker: str, content: str) -> None:",
+    "if marker in text:",
 ):
     if marker not in finalization_text:
         raise SystemExit(f"Portfolio finalization helper is missing marker: {marker}")
