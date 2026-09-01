@@ -89,9 +89,12 @@ replace_once(
 )
 replace_once(
     CLI,
-    '''        state = advance_paper(state, low, high, config, funding, marks, rules)
+    '''        state = repository.load_engine_state("paper", config.initial_cash)
+        state = advance_paper(state, low, high, config, funding, marks, rules)
+        repository.save_engine_state("paper", state, int(time.time() * 1000))
 ''',
-    '''        state = advance_paper(
+    '''        state = repository.load_engine_state("paper", config.initial_cash)
+        state = advance_paper(
             state,
             low,
             high,
@@ -101,6 +104,7 @@ replace_once(
             rules,
             allow_legacy_event_engine=True,
         )
+        repository.save_engine_state("paper", state, int(time.time() * 1000))
 ''',
 )
 replace_once(
@@ -116,9 +120,12 @@ replace_once(
 )
 replace_once(
     CLI,
-    '''            state = advance_paper(state, low, high, config, funding, marks, rules)
+    '''            low, high, funding, marks, rules = _fetch(config, args.days)
+            state = advance_paper(state, low, high, config, funding, marks, rules)
+            prices[symbol] = low[-1].close
 ''',
-    '''            state = advance_paper(
+    '''            low, high, funding, marks, rules = _fetch(config, args.days)
+            state = advance_paper(
                 state,
                 low,
                 high,
@@ -128,6 +135,7 @@ replace_once(
                 rules,
                 allow_legacy_event_engine=True,
             )
+            prices[symbol] = low[-1].close
 ''',
 )
 replace_once(
