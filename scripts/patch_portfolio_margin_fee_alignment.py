@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def replace_once(path: Path, old: str, new: str) -> None:
+def replace_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text(encoding="utf-8")
     count = text.count(old)
     if count == 1:
@@ -10,7 +10,8 @@ def replace_once(path: Path, old: str, new: str) -> None:
     if count == 0 and new in text:
         return
     raise SystemExit(
-        f"expected one margin-fee source or existing target in {path}, found {count}"
+        f"Portfolio margin-fee patch {label} expected one source or existing target, "
+        f"found source={count} target={text.count(new)}"
     )
 
 
@@ -24,64 +25,117 @@ def append_once(path: Path, marker: str, content: str) -> None:
 ACCOUNTING = Path("src/crypto_quant/portfolio_accounting.py")
 TEST = Path("tests/test_portfolio_accounting.py")
 
+# lifecycle_failures.py already separates initial margin from a fee bucket and
+# lifecycle_round4.py makes reservation quantization conservative. Upgrade that
+# intermediate representation instead of reapplying the original reservation
+# patch against a source shape that no longer exists.
 replace_once(
     ACCOUNTING,
-    '''    if command.created_at > now_ms:
-        raise PortfolioAccountingError("command reservation time precedes command creation")
-    if command.mode is ExecutionMode.SHADOW:
-        state = ReservationState.SHADOW_RECORDED
-        monetary_margin = ZERO
-        fee_reserve = ZERO
-    else:
-        state = ReservationState.ACTIVE
-        monetary_margin = policy.quantize_money(command.required_margin)
-        fee_reserve = policy.quantize_money(
-            as_decimal(command.quantity, "command quantity")
-            * as_decimal(command.approval_price, "approval price")
-            * policy.fee_reserve_rate
-        )
-
-    entry = command.action in {
-        RiskApprovedAction.OPEN_LONG,
-        RiskApprovedAction.OPEN_SHORT,
-    }
-''',
-    '''    if command.created_at > now_ms:
-        raise PortfolioAccountingError("command reservation time precedes command creation")
-    entry = command.action in {
-        RiskApprovedAction.OPEN_LONG,
-        RiskApprovedAction.OPEN_SHORT,
-    }
+    '''    command_quantity = as_decimal(command.quantity, "command quantity")
+    approval_price = as_decimal(command.approval_price, "approval price")
+    policy_fee_reserve = policy.quantize_up(
+        command_quantity * approval_price * policy.fee_reserve_rate
+    )
     if command.mode is ExecutionMode.SHADOW:
         state = ReservationState.SHADOW_RECORDED
         monetary_margin = ZERO
         fee_reserve = ZERO
     elif entry:
         state = ReservationState.ACTIVE
-        decision_notional = as_decimal(decision.notional, "risk decision notional")
-        decision_leverage = as_decimal(decision.leverage, "risk decision leverage")
-        if decision_leverage <= ZERO:
-            raise PortfolioAccountingError("entry risk decision has non-positive leverage")
-        monetary_margin = policy.quantize_money(decision_notional / decision_leverage)
-        approved_total = policy.quantize_money(command.required_margin)
-        if approved_total < monetary_margin:
+        approved_notional = as_decimal(decision.notional, "approved notional")
+        approved_leverage = as_decimal(decision.leverage, "approved leverage")
+        if approved_notional <= ZERO or approved_leverage < Decimal("1"):
             raise PortfolioAccountingError(
-                "risk required margin is below its initial-margin component"
+                "approved entry has invalid notional or leverage"
             )
-        # Risk required_margin already includes the approved entry fee. Keep
-        # that fee in the fee bucket instead of misclassifying it as position
-        # margin. Do not reserve an additional round-trip fee here: that would
-        # make a Risk-approved order fail Portfolio solely because of duplicate
-        # capital reservation.
-        fee_reserve = approved_total - monetary_margin
+        monetary_margin = policy.quantize_up(
+            approved_notional / approved_leverage
+        )
+        approved_required_margin = policy.quantize_up(command.required_margin)
+        if approved_required_margin < monetary_margin:
+            raise PortfolioAccountingError(
+                "approved required margin is below initial margin"
+            )
+        approved_fee_allowance = approved_required_margin - monetary_margin
+        fee_reserve = max(policy_fee_reserve, approved_fee_allowance)
     else:
         state = ReservationState.ACTIVE
         monetary_margin = ZERO
-        # Risk-reducing exits must never be blocked because free cash cannot be
-        # pre-reserved for their fee. The close transaction releases position
-        # margin and settles the actual fee atomically.
+        fee_reserve = policy_fee_reserve
+''',
+    '''    command_quantity = as_decimal(command.quantity, "command quantity")
+    if command.mode is ExecutionMode.SHADOW:
+        state = ReservationState.SHADOW_RECORDED
+        monetary_margin = ZERO
+        fee_reserve = ZERO
+    elif entry:
+        state = ReservationState.ACTIVE
+        approved_notional = as_decimal(decision.notional, "approved notional")
+        approved_leverage = as_decimal(decision.leverage, "approved leverage")
+        if approved_notional <= ZERO or approved_leverage < Decimal("1"):
+            raise PortfolioAccountingError(
+                "approved entry has invalid notional or leverage"
+            )
+        monetary_margin = policy.quantize_up(
+            approved_notional / approved_leverage
+        )
+        approved_required_margin = policy.quantize_up(command.required_margin)
+        if approved_required_margin < monetary_margin:
+            raise PortfolioAccountingError(
+                "risk required margin is below its initial-margin component"
+            )
+        # Risk required_margin already includes its approved entry fee. Keep
+        # exactly that allowance in the fee bucket; reserving policy_fee_rate
+        # again would make a Risk-approved command fail Portfolio because the
+        # same fee capital was counted twice.
+        fee_reserve = approved_required_margin - monetary_margin
+    else:
+        state = ReservationState.ACTIVE
+        monetary_margin = ZERO
+        # Risk-reducing exits must never be blocked by a fee pre-reservation.
+        # The close transaction releases position margin and settles the actual
+        # fee atomically from the resulting account balances.
         fee_reserve = ZERO
 ''',
+    "reservation_policy",
+)
+
+# Replace the older lifecycle acceptance assertion which explicitly required an
+# additional policy fee buffer. That behavior is the double-reservation bug this
+# hardening stage removes.
+replace_once(
+    TEST,
+    '''    approved_fee_allowance = approved_required_margin - expected_initial_margin
+    policy_fee_allowance = policy.quantize_money(
+        Decimal(str(command.quantity))
+        * Decimal(str(command.approval_price))
+        * policy.fee_reserve_rate
+    )
+
+    assert plan.reservation.reserved_margin_total == expected_initial_margin
+    assert plan.reservation.command_margin_remaining == expected_initial_margin
+    assert plan.reservation.fee_reserve_total == max(
+        approved_fee_allowance,
+        policy_fee_allowance,
+    )
+    assert (
+        plan.reservation.reserved_margin_total
+        + plan.reservation.fee_reserve_total
+        >= approved_required_margin
+    )
+''',
+    '''    approved_fee_allowance = approved_required_margin - expected_initial_margin
+
+    assert plan.reservation.reserved_margin_total == expected_initial_margin
+    assert plan.reservation.command_margin_remaining == expected_initial_margin
+    assert plan.reservation.fee_reserve_total == approved_fee_allowance
+    assert (
+        plan.reservation.reserved_margin_total
+        + plan.reservation.fee_reserve_total
+        == approved_required_margin
+    )
+''',
+    "legacy_acceptance_assertion",
 )
 
 append_once(
@@ -91,7 +145,7 @@ append_once(
     policy = AccountPolicy()
     decision = risk_decision()
     command = execution_command(decision)
-    approved_total = policy.quantize_money(command.required_margin)
+    approved_total = policy.quantize_up(command.required_margin)
     balances = AccountBalances(
         cash=approved_total,
         external_capital=approved_total,
@@ -106,7 +160,7 @@ append_once(
         now_ms=NOW,
     )
 
-    expected_margin = policy.quantize_money(
+    expected_margin = policy.quantize_up(
         Decimal(str(decision.notional)) / Decimal(str(decision.leverage))
     )
     assert plan.reservation.reserved_margin_total == expected_margin
