@@ -40,6 +40,9 @@ FILES = (
     "scripts/patch_portfolio_engine_boundaries.py",
     "scripts/patch_portfolio_convergence.py",
     "scripts/patch_portfolio_audit_integration.py",
+    "scripts/patch_portfolio_funding_replay.py",
+    "scripts/patch_portfolio_reservation_snapshot_boundaries.py",
+    "scripts/patch_portfolio_available_balance.py",
     "scripts/patch_legacy_paper_boundary.py",
 )
 
