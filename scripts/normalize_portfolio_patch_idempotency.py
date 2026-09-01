@@ -7,13 +7,20 @@ from pathlib import Path
 IDEMPOTENT = '''def replace_once(path: str, old: str, new: str) -> None:
     file = Path(path)
     text = file.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count == 1:
+    target_count = text.count(new)
+    if target_count == 1:
+        return
+    if target_count > 1:
+        raise SystemExit(
+            f"expected at most one existing target in {path}, found {target_count}"
+        )
+    source_count = text.count(old)
+    if source_count == 1:
         file.write_text(text.replace(old, new), encoding="utf-8")
         return
-    if count == 0 and new in text:
-        return
-    raise SystemExit(f"expected one source or existing target in {path}, found {count}")
+    raise SystemExit(
+        f"expected one source or existing target in {path}, found {source_count}"
+    )
 '''
 
 FILES = (
@@ -69,19 +76,26 @@ def _normalize_helper(path: Path) -> None:
     end = sum(len(line) for line in lines[: node.end_lineno])
     helper = text[start:end]
 
-    if (
-        "if count == 1:" in helper
-        and "if count == 0 and new in text:" in helper
-        and "file.write_text(text.replace(old, new)" in helper
-    ):
+    robust_markers = (
+        "target_count = text.count(new)",
+        "if target_count == 1:",
+        "source_count = text.count(old)",
+        "if source_count == 1:",
+        'file.write_text(text.replace(old, new), encoding="utf-8")',
+    )
+    if all(marker in helper for marker in robust_markers):
         return
 
-    legacy_markers = (
-        "count = text.count(old)",
-        "if count != 1:",
-        "file.write_text(text.replace(old, new), encoding=\"utf-8\")",
+    # Accept both the original strict helper and the first-generation
+    # idempotent helper. Both are safe to normalize structurally because they
+    # implement the same single literal replacement; the first-generation
+    # version is insufficient when ``old`` is a literal substring of ``new``.
+    recognized_markers = (
+        "text = file.read_text",
+        "text.count(old)",
+        'file.write_text(text.replace(old, new), encoding="utf-8")',
     )
-    missing = [marker for marker in legacy_markers if marker not in helper]
+    missing = [marker for marker in recognized_markers if marker not in helper]
     if missing:
         raise SystemExit(
             f"{path} has an unrecognized replace_once helper; missing: {', '.join(missing)}"
@@ -114,7 +128,23 @@ if count != 1:
     raise SystemExit(f"expected one critical finding halt block, found {count}")
 STORE.write_text(store.replace(old, new), encoding="utf-8")
 '''
-new = '''count = store.count(old)
+new = '''target_count = store.count(new)
+if target_count == 1:
+    pass
+elif target_count > 1:
+    raise SystemExit(
+        f"expected at most one critical finding target, found {target_count}"
+    )
+else:
+    source_count = store.count(old)
+    if source_count == 1:
+        STORE.write_text(store.replace(old, new), encoding="utf-8")
+    else:
+        raise SystemExit(
+            f"expected one critical finding source or existing target, found {source_count}"
+        )
+'''
+old_v1 = '''count = store.count(old)
 if count == 1:
     STORE.write_text(store.replace(old, new), encoding="utf-8")
 elif count == 0 and new in store:
@@ -124,10 +154,11 @@ else:
         f"expected one critical finding source or existing target, found {count}"
     )
 '''
-count = text.count(old)
-if count == 1:
-    round4.write_text(text.replace(old, new), encoding="utf-8")
-elif count == 0 and new in text:
+if new in text:
     pass
+elif old in text:
+    round4.write_text(text.replace(old, new), encoding="utf-8")
+elif old_v1 in text:
+    round4.write_text(text.replace(old_v1, new), encoding="utf-8")
 else:
-    raise SystemExit(f"expected one round4 normalization anchor, found {count}")
+    raise SystemExit("round4 normalization anchor is missing or ambiguous")
