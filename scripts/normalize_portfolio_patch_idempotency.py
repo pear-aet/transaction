@@ -44,6 +44,9 @@ FILES = (
     "scripts/patch_portfolio_reservation_snapshot_boundaries.py",
     "scripts/patch_portfolio_available_balance.py",
     "scripts/patch_legacy_paper_boundary.py",
+    "scripts/patch_research_trading_hardening.py",
+    "scripts/patch_research_engine_projection.py",
+    "scripts/patch_backtest_accounting_mode.py",
 )
 
 
