@@ -26,6 +26,7 @@ IDEMPOTENT = '''def replace_once(path: str, old: str, new: str) -> None:
 FILES = (
     "scripts/patch_portfolio_lifecycle.py",
     "scripts/patch_portfolio_lifecycle_failures.py",
+    "scripts/patch_portfolio_lifecycle_round4.py",
     "scripts/patch_portfolio_execution_events.py",
     "scripts/patch_portfolio_engine_boundaries.py",
     "scripts/patch_portfolio_convergence.py",
@@ -86,14 +87,11 @@ def _normalize_helper(path: Path) -> None:
     if all(marker in helper for marker in robust_markers):
         return
 
-    # Accept both the original strict helper and the first-generation
-    # idempotent helper. Both are safe to normalize structurally because they
-    # implement the same single literal replacement; the first-generation
-    # version is insufficient when ``old`` is a literal substring of ``new``.
     recognized_markers = (
-        "text = file.read_text",
+        "read_text",
         "text.count(old)",
-        'file.write_text(text.replace(old, new), encoding="utf-8")',
+        "replace(old, new)",
+        "write_text",
     )
     missing = [marker for marker in recognized_markers if marker not in helper]
     if missing:
