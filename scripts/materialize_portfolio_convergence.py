@@ -21,6 +21,7 @@ CORE_PATCH_CHAIN = (
     "scripts/patch_portfolio_snapshot_halt_reason.py",
     "scripts/patch_portfolio_funding_replay.py",
     "scripts/patch_portfolio_reservation_snapshot_boundaries.py",
+    "scripts/patch_portfolio_available_balance.py",
     "scripts/patch_legacy_paper_boundary.py",
     "scripts/patch_research_execution_hardening.py",
     "scripts/patch_research_trading_hardening.py",
@@ -45,6 +46,9 @@ TEXT_REQUIREMENTS: dict[str, tuple[str, ...]] = {
         "CREATE TABLE IF NOT EXISTS account_execution_update_events",
         "CREATE TABLE IF NOT EXISTS account_reconciliation_findings",
         "CREATE TABLE IF NOT EXISTS account_funding_applications",
+    ),
+    "src/crypto_quant/portfolio_contracts.py": (
+        "return self.balances.cash + self.unrealized_pnl",
     ),
     "src/crypto_quant/portfolio_engine.py": (
         "funding source changed immutable semantics",
@@ -154,6 +158,9 @@ CLASS_METHODS: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 TEST_FUNCTIONS: dict[str, tuple[str, ...]] = {
+    "tests/test_portfolio_contracts.py": (
+        "test_available_balance_includes_cross_margin_unrealized_pnl",
+    ),
     "tests/test_portfolio_engine.py": (
         "test_funding_source_replay_is_idempotent_and_immutable",
         "test_conflicting_entry_reservation_is_rejected_atomically",
