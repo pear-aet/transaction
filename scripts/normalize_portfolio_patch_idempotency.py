@@ -1,14 +1,9 @@
+from __future__ import annotations
+
+import ast
 from pathlib import Path
 
 
-STANDARD = '''def replace_once(path: str, old: str, new: str) -> None:
-    file = Path(path)
-    text = file.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"expected one match in {path}, found {count}")
-    file.write_text(text.replace(old, new), encoding="utf-8")
-'''
 IDEMPOTENT = '''def replace_once(path: str, old: str, new: str) -> None:
     file = Path(path)
     text = file.read_text(encoding="utf-8")
@@ -31,15 +26,72 @@ FILES = (
     "scripts/patch_legacy_paper_boundary.py",
 )
 
-for name in FILES:
-    path = Path(name)
+
+def _replace_once_calls(tree: ast.AST) -> list[ast.Call]:
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "replace_once"
+    ]
+
+
+def _normalize_helper(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if IDEMPOTENT in text:
-        continue
-    count = text.count(STANDARD)
-    if count != 1:
-        raise SystemExit(f"expected one replace_once helper in {name}, found {count}")
-    path.write_text(text.replace(STANDARD, IDEMPOTENT), encoding="utf-8")
+    try:
+        tree = ast.parse(text, filename=str(path))
+    except SyntaxError as exc:
+        raise SystemExit(f"cannot parse Portfolio patch {path}: {exc}") from exc
+
+    definitions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "replace_once"
+    ]
+    calls = _replace_once_calls(tree)
+    if not definitions:
+        if calls:
+            raise SystemExit(f"{path} calls replace_once without a local helper")
+        return
+    if len(definitions) != 1:
+        raise SystemExit(f"{path} must define exactly one replace_once helper")
+
+    node = definitions[0]
+    if isinstance(node, ast.AsyncFunctionDef):
+        raise SystemExit(f"{path} replace_once helper must be synchronous")
+    if node.end_lineno is None:
+        raise SystemExit(f"cannot locate replace_once helper end in {path}")
+
+    lines = text.splitlines(keepends=True)
+    start = sum(len(line) for line in lines[: node.lineno - 1])
+    end = sum(len(line) for line in lines[: node.end_lineno])
+    helper = text[start:end]
+
+    if (
+        "if count == 1:" in helper
+        and "if count == 0 and new in text:" in helper
+        and "file.write_text(text.replace(old, new)" in helper
+    ):
+        return
+
+    legacy_markers = (
+        "count = text.count(old)",
+        "if count != 1:",
+        "file.write_text(text.replace(old, new), encoding=\"utf-8\")",
+    )
+    missing = [marker for marker in legacy_markers if marker not in helper]
+    if missing:
+        raise SystemExit(
+            f"{path} has an unrecognized replace_once helper; missing: {', '.join(missing)}"
+        )
+
+    path.write_text(text[:start] + IDEMPOTENT.rstrip("\n") + text[end:], encoding="utf-8")
+
+
+for name in FILES:
+    _normalize_helper(Path(name))
 
 # patch_portfolio_runtime_audit_propagation.py intentionally owns a richer
 # idempotent helper set (replace_once, replace_all and append_once). It is a
