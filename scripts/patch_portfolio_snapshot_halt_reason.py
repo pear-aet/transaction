@@ -28,10 +28,13 @@ def append_once(path: Path, marker: str, content: str) -> None:
 path = Path("src/crypto_quant/portfolio_engine.py")
 replace_once(
     path,
-    '''        halt_reasons = []
-        for position in positions:
+    '''        positions = tuple(self.store.list_positions(self.settings.account_id))
+        halt_reasons = []
+        if instance.status is AccountStatus.HALTED:
+            halt_reasons.append(AccountHaltReason.RECONCILIATION_FAILURE)
 ''',
-    '''        halt_reasons = []
+    '''        positions = tuple(self.store.list_positions(self.settings.account_id))
+        halt_reasons = []
         if instance.status is AccountStatus.HALTED:
             reason = instance.halt_reason or ""
             if reason.startswith("reconciliation:"):
@@ -44,7 +47,6 @@ replace_once(
                 halt_reasons.append(AccountHaltReason.EXECUTION_CONFLICT)
             else:
                 halt_reasons.append(AccountHaltReason.RECONCILIATION_FAILURE)
-        for position in positions:
 ''',
     "halt_reason_mapping",
 )
