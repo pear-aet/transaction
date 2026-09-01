@@ -48,7 +48,7 @@ TEXT_REQUIREMENTS: dict[str, tuple[str, ...]] = {
         "CREATE TABLE IF NOT EXISTS account_funding_applications",
     ),
     "src/crypto_quant/portfolio_contracts.py": (
-        "return self.balances.cash + self.unrealized_pnl",
+        "return self.balances.cash + min(self.unrealized_pnl, ZERO)",
     ),
     "src/crypto_quant/portfolio_engine.py": (
         "funding source changed immutable semantics",
@@ -159,7 +159,7 @@ CLASS_METHODS: dict[tuple[str, str], tuple[str, ...]] = {
 
 TEST_FUNCTIONS: dict[str, tuple[str, ...]] = {
     "tests/test_portfolio_contracts.py": (
-        "test_available_balance_includes_cross_margin_unrealized_pnl",
+        "test_available_balance_applies_losses_without_rehypothecating_unrealized_profit",
     ),
     "tests/test_portfolio_engine.py": (
         "test_funding_source_replay_is_idempotent_and_immutable",
