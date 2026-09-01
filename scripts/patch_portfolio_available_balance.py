@@ -32,18 +32,18 @@ replace_once(
 ''',
     '''    @property
     def available_balance(self) -> Decimal:
-        # ``cash`` is the free settled balance after command reserves and
-        # position margin have already been carved out of settled assets.
-        # In cross margin, unrealized PnL changes the collateral that can back
-        # another order, so free collateral must move with the mark as well.
-        return self.balances.cash + self.unrealized_pnl
+        # ``cash`` is the only settled free balance that Portfolio can move
+        # into a command reservation today. Unrealized losses must reduce the
+        # collateral Risk may spend, while unrealized profits are deliberately
+        # not rehypothecated until the ledger has an explicit collateral path.
+        return self.balances.cash + min(self.unrealized_pnl, ZERO)
 ''',
 )
 
 append_once(
     TEST,
-    "def test_available_balance_includes_cross_margin_unrealized_pnl(",
-    '''def test_available_balance_includes_cross_margin_unrealized_pnl() -> None:
+    "def test_available_balance_applies_losses_without_rehypothecating_unrealized_profit(",
+    '''def test_available_balance_applies_losses_without_rehypothecating_unrealized_profit() -> None:
     balances = AccountBalances(
         cash=Decimal("900"),
         position_margin=Decimal("100"),
@@ -97,7 +97,7 @@ append_once(
     )
     assert profit_snapshot.unrealized_pnl == Decimal("20")
     assert profit_snapshot.equity == Decimal("1020")
-    assert profit_snapshot.available_balance == Decimal("920")
-    assert profit_snapshot.to_risk_snapshot().available_balance == 920.0
+    assert profit_snapshot.available_balance == Decimal("900")
+    assert profit_snapshot.to_risk_snapshot().available_balance == 900.0
 ''',
 )
