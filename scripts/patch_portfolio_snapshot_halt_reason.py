@@ -3,15 +3,24 @@ from pathlib import Path
 
 def replace_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count == 1:
+    if new:
+        target_count = text.count(new)
+        if target_count == 1:
+            return
+        if target_count > 1:
+            raise SystemExit(
+                f"Portfolio snapshot patch {label} found multiple existing targets: "
+                f"{target_count}"
+            )
+    source_count = text.count(old)
+    if source_count == 1:
         path.write_text(text.replace(old, new), encoding="utf-8")
         return
-    if count == 0 and new in text:
+    if not new and source_count == 0:
         return
     raise SystemExit(
         f"Portfolio snapshot patch {label} expected one source or existing target, "
-        f"found source={count} target={text.count(new)}"
+        f"found source={source_count} target={0 if not new else text.count(new)}"
     )
 
 
