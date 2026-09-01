@@ -7,6 +7,16 @@ from pathlib import Path
 IDEMPOTENT = '''def replace_once(path: str, old: str, new: str) -> None:
     file = Path(path)
     text = file.read_text(encoding="utf-8")
+    source_count = text.count(old)
+    if new == "":
+        if source_count == 1:
+            file.write_text(text.replace(old, new), encoding="utf-8")
+            return
+        if source_count == 0:
+            return
+        raise SystemExit(
+            f"expected one deletion source or completed deletion in {path}, found {source_count}"
+        )
     target_count = text.count(new)
     if target_count == 1:
         return
@@ -14,7 +24,6 @@ IDEMPOTENT = '''def replace_once(path: str, old: str, new: str) -> None:
         raise SystemExit(
             f"expected at most one existing target in {path}, found {target_count}"
         )
-    source_count = text.count(old)
     if source_count == 1:
         file.write_text(text.replace(old, new), encoding="utf-8")
         return
@@ -78,9 +87,10 @@ def _normalize_helper(path: Path) -> None:
     helper = text[start:end]
 
     robust_markers = (
+        'if new == "":',
+        "source_count = text.count(old)",
         "target_count = text.count(new)",
         "if target_count == 1:",
-        "source_count = text.count(old)",
         "if source_count == 1:",
         'file.write_text(text.replace(old, new), encoding="utf-8")',
     )
@@ -105,9 +115,6 @@ def _normalize_helper(path: Path) -> None:
 for name in FILES:
     _normalize_helper(Path(name))
 
-# patch_portfolio_runtime_audit_propagation.py intentionally owns a richer
-# idempotent helper set (replace_once, replace_all and append_once). It is a
-# separate finalization stage and must not be rewritten by this normalizer.
 finalization = Path("scripts/patch_portfolio_runtime_audit_propagation.py")
 finalization_text = finalization.read_text(encoding="utf-8")
 for marker in (
