@@ -66,6 +66,8 @@ jobs:
               scripts/patch_portfolio_snapshot_halt_reason.py \
               scripts/patch_portfolio_funding_replay.py \
               scripts/patch_portfolio_reservation_snapshot_boundaries.py \
+              scripts/patch_portfolio_available_balance.py \
+              scripts/patch_portfolio_margin_fee_alignment.py \
               scripts/patch_portfolio_runtime_audit_propagation.py \
               scripts/patch_legacy_paper_boundary.py \
               scripts/patch_research_execution_hardening.py \
@@ -103,6 +105,8 @@ jobs:
             scripts/patch_portfolio_snapshot_halt_reason.py \
             scripts/patch_portfolio_funding_replay.py \
             scripts/patch_portfolio_reservation_snapshot_boundaries.py \
+            scripts/patch_portfolio_available_balance.py \
+            scripts/patch_portfolio_margin_fee_alignment.py \
             scripts/patch_portfolio_runtime_audit_propagation.py \
             scripts/patch_legacy_paper_boundary.py \
             scripts/patch_research_execution_hardening.py \
