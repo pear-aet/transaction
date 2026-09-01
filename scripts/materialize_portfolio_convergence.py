@@ -22,6 +22,7 @@ CORE_PATCH_CHAIN = (
     "scripts/patch_portfolio_funding_replay.py",
     "scripts/patch_portfolio_reservation_snapshot_boundaries.py",
     "scripts/patch_portfolio_available_balance.py",
+    "scripts/patch_portfolio_margin_fee_alignment.py",
     "scripts/patch_legacy_paper_boundary.py",
     "scripts/patch_research_execution_hardening.py",
     "scripts/patch_research_trading_hardening.py",
@@ -49,6 +50,10 @@ TEXT_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     ),
     "src/crypto_quant/portfolio_contracts.py": (
         "return self.balances.cash + min(self.unrealized_pnl, ZERO)",
+    ),
+    "src/crypto_quant/portfolio_accounting.py": (
+        "risk required margin is below its initial-margin component",
+        "Risk-reducing exits must never be blocked",
     ),
     "src/crypto_quant/portfolio_engine.py": (
         "funding source changed immutable semantics",
@@ -160,6 +165,10 @@ CLASS_METHODS: dict[tuple[str, str], tuple[str, ...]] = {
 TEST_FUNCTIONS: dict[str, tuple[str, ...]] = {
     "tests/test_portfolio_contracts.py": (
         "test_available_balance_applies_losses_without_rehypothecating_unrealized_profit",
+    ),
+    "tests/test_portfolio_accounting.py": (
+        "test_entry_reservation_does_not_double_count_risk_approved_fee",
+        "test_exit_reservation_never_requires_free_cash_for_fee",
     ),
     "tests/test_portfolio_engine.py": (
         "test_funding_source_replay_is_idempotent_and_immutable",
