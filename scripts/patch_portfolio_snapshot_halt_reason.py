@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def replace_once(path: Path, old: str, new: str) -> None:
+def replace_once(path: Path, old: str, new: str, label: str) -> None:
     text = path.read_text(encoding="utf-8")
     count = text.count(old)
     if count == 1:
@@ -10,7 +10,8 @@ def replace_once(path: Path, old: str, new: str) -> None:
     if count == 0 and new in text:
         return
     raise SystemExit(
-        f"expected one Portfolio snapshot source or existing target, found {count}"
+        f"Portfolio snapshot patch {label} expected one source or existing target, "
+        f"found source={count} target={text.count(new)}"
     )
 
 
@@ -45,6 +46,7 @@ replace_once(
                 halt_reasons.append(AccountHaltReason.RECONCILIATION_FAILURE)
         for position in positions:
 ''',
+    "halt_reason_mapping",
 )
 replace_once(
     path,
@@ -65,6 +67,7 @@ replace_once(
                 # whose economic state changed afterwards.
                 halt_reasons.append(AccountHaltReason.STALE_MARK)
 ''',
+    "stale_mark_certification",
 )
 replace_once(
     path,
@@ -91,6 +94,7 @@ replace_once(
                 )
         provisional = build_account_snapshot(
 ''',
+    "equity_anchor_rebase",
 )
 replace_once(
     path,
@@ -108,6 +112,7 @@ replace_once(
     '''            day_start_equity=adjusted_day_start,
             peak_equity=adjusted_peak,
 ''',
+    "equity_anchor_fields",
 )
 replace_once(
     path,
@@ -125,6 +130,7 @@ replace_once(
             self.health.last_error = None
         return commit.snapshot
 ''',
+    "health_state",
 )
 
 append_once(
