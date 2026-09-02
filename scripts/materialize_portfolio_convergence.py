@@ -237,6 +237,51 @@ def _run_idempotent_phase(
             )
 
 
+def _cleanup_dead_reconcile_clock(
+    repo_root: Path,
+    *,
+    verify_idempotency: bool,
+) -> None:
+    path = repo_root / "src/crypto_quant/portfolio_engine.py"
+    old = '''    def reconcile_execution(self, *, now_ms: int | None = None) -> int:
+        current = int(time.time() * 1000) if now_ms is None else now_ms
+        findings = 0
+'''
+    new = '''    def reconcile_execution(self, *, now_ms: int | None = None) -> int:
+        findings = 0
+'''
+
+    def apply() -> None:
+        text = path.read_text(encoding="utf-8")
+        target_count = text.count(new)
+        if target_count == 1:
+            return
+        if target_count > 1:
+            raise SystemExit(
+                "Portfolio final cleanup found multiple reconcile targets"
+            )
+        source_count = text.count(old)
+        if source_count != 1:
+            raise SystemExit(
+                "Portfolio final cleanup expected one reconcile source or target, "
+                f"found source={source_count} target={target_count}"
+            )
+        path.write_text(text.replace(old, new), encoding="utf-8")
+
+    apply()
+    if not verify_idempotency:
+        return
+    first = _fingerprint(repo_root)
+    apply()
+    second = _fingerprint(repo_root)
+    changed = _changed(first, second)
+    if changed:
+        raise SystemExit(
+            "Portfolio final cleanup is not locally idempotent:\n- "
+            + "\n- ".join(changed)
+        )
+
+
 def _parse(repo_root: Path, relative: str) -> ast.Module:
     path = repo_root / relative
     if not path.is_file():
@@ -363,6 +408,10 @@ def _validate_patch_chain(repo_root: Path, *, verify_idempotency: bool) -> None:
         repo_root,
         (FINALIZATION_PATCH,),
         phase_name="Portfolio finalization",
+        verify_idempotency=verify_idempotency,
+    )
+    _cleanup_dead_reconcile_clock(
+        repo_root,
         verify_idempotency=verify_idempotency,
     )
 
